@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.spec
+.runtime/
+
+# Local source data and generated results
+/data/
+/DATA1/
+/output/
+*.xlsx
+*.xlsm
+*.xls
+*.sqlite
+*.sqlite-*
+*.zip
+*-log.txt
+/promt.txt
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+.aws/
+.codex/
+.agents/
