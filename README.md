@@ -25,6 +25,30 @@ build.ps1
 
 Presentation gọi application; application điều phối domain/matching và các adapter Excel/SQLite/report. Domain không import Tkinter, Pandas hoặc Openpyxl. Không tạo lớp interface rỗng chỉ để bọc một implementation. Seam với GUI là `JobContext(emit, cancelled)`, truyền `Progress` qua Queue. `StudentRecord` giữ 24 giá trị gốc và vị trí nguồn; `MatchResult` giữ trạng thái, hai phía và ứng viên.
 
+## Tải mã nguồn bằng Git
+
+Cài Git và Python có Tcl/Tk trên Windows. Mở PowerShell tại thư mục muốn lưu dự án, chạy:
+
+```powershell
+git clone https://github.com/mask2a/SOHOADULIEU.git
+cd SOHOADULIEU
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe main.py
+```
+
+Dữ liệu Excel và kết quả xuất không được đưa lên GitHub. Sau khi tải mã nguồn, chép các file Excel của bạn vào thư mục riêng (ví dụ `DATA1`), rồi chọn thư mục đó trong ứng dụng. Kết quả được tạo tại thư mục đầu ra đã chọn, trong `TACH_NAM_<ID>`.
+
+Để lấy phiên bản mới, đóng ứng dụng, mở PowerShell trong thư mục `SOHOADULIEU` và chạy:
+
+```powershell
+git pull --ff-only origin main
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe main.py
+```
+
+Nếu Git báo có thay đổi cục bộ, chạy `git status` để kiểm tra và lưu các thay đổi trước khi cập nhật.
+
 ## Cài và chạy
 
 ```powershell
