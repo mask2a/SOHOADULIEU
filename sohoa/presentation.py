@@ -7,7 +7,7 @@ import threading
 import traceback
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from .application import merge, compare, JobContext
+from .application import merge, compare, compare_batch, JobContext
 from .domain import HEADERS, Progress, AppError, Cancelled
 from .excel import inspect, auto_mapping
 from .paths import resolve_alias, resolve_data
@@ -27,9 +27,11 @@ class App(ttk.Frame):
         self.data=tk.StringVar(value=str(resolve_data(self.settings.get('data'))))
         self.alias=tk.StringVar(value=str(resolve_alias(self.config_dir,self.settings.get('alias'))))
         self.school=tk.StringVar(); self.header=tk.StringVar(value='1'); self.years=tk.StringVar()
-        tabs=ttk.Notebook(self); tabs.pack(fill='x')
+        tabs=ttk.Notebook(self); tabs.pack(fill='x'); self.tabs=tabs
         a=ttk.Frame(tabs,padding=10); b=ttk.Frame(tabs,padding=10)
+        c=ttk.Frame(tabs,padding=10)
         tabs.add(a,text='1. Gộp và tách theo năm'); tabs.add(b,text='2. Đối soát và báo cáo')
+        tabs.add(c,text='3. Đối soát theo lô')
         self.path_row(a,0,'Thư mục dữ liệu',self.data,lambda: self.choose_dir(self.data))
         ttk.Label(a,text='Gộp các file Excel, tách theo năm tốt nghiệp cột M: 1984.xlsx, 1985.xlsx…').grid(row=2,column=0,columnspan=3,sticky='w')
         self.merge_btn=ttk.Button(a,text='Gộp và tách theo năm',command=self.start_merge); self.merge_btn.grid(row=3,column=0,pady=8,sticky='w')
@@ -53,6 +55,13 @@ class App(ttk.Frame):
         ttk.Label(b,text='Để trống để kiểm tra mọi năm; hoặc nhập năm/khoảng năm').grid(row=4,column=2)
         self.compare_btn=ttk.Button(b,text='Xuất báo cáo đối soát',command=self.start_compare)
         self.compare_btn.grid(row=5,column=0,pady=8,sticky='w')
+        self.source_dir=tk.StringVar(); self.school_dir=tk.StringVar()
+        self.path_row(c,0,'Thư mục nguồn chuẩn',self.source_dir,lambda:self.choose_dir(self.source_dir))
+        self.path_row(c,1,'Thư mục trường gửi',self.school_dir,lambda:self.choose_dir(self.school_dir))
+        ttk.Label(c,text='Tự ghép THCS.CQ.<năm>_output.xlsx với <năm>.xlsx; chỉ kiểm tra năm trùng.').grid(
+            row=2,column=0,columnspan=3,sticky='w',pady=4)
+        self.compare_batch_btn=ttk.Button(c,text='Đối soát các năm trùng',command=self.start_compare_batch)
+        self.compare_batch_btn.grid(row=3,column=0,pady=8,sticky='w')
         self.path_row(self,1,'Thư mục kết quả',self.output,lambda:self.choose_dir(self.output),pack=True)
         self.progress=ttk.Progressbar(self,mode='indeterminate'); self.progress.pack(fill='x',pady=8)
         self.status=ttk.Label(self,text='Sẵn sàng'); self.status.pack(anchor='w')
@@ -136,12 +145,24 @@ class App(ttk.Frame):
             self.start(lambda ctx:compare(*args,context=ctx))
         except Exception as exc: messagebox.showerror('Kiểm tra đầu vào',str(exc))
 
+    def start_compare_batch(self):
+        source_dir,school_dir,output=self.source_dir.get(),self.school_dir.get(),self.output.get()
+        if not Path(source_dir).is_dir():
+            messagebox.showerror('Thiếu thư mục nguồn',f'Chọn thư mục có file THCS.CQ.<năm>_output.xlsx.\n{source_dir}')
+            return
+        if not Path(school_dir).is_dir():
+            messagebox.showerror('Thiếu thư mục trường gửi',f'Chọn thư mục có file <năm>.xlsx.\n{school_dir}')
+            return
+        self.start(lambda ctx:compare_batch(source_dir,school_dir,output,context=ctx))
+
     def start(self,fn):
         if self.busy: return
         self.settings.update(output=self.output.get(),data=self.data.get(),alias=self.alias.get())
         self.settings_path.write_text(json.dumps(self.settings,ensure_ascii=False,indent=2),encoding='utf-8')
         self.busy=True; self.stop.clear()
-        self.merge_btn.configure(state='disabled'); self.scan_btn.configure(state='disabled'); self.compare_btn.configure(state='disabled'); self.cancel_btn.configure(state='normal')
+        self.merge_btn.configure(state='disabled'); self.scan_btn.configure(state='disabled')
+        self.compare_btn.configure(state='disabled'); self.compare_batch_btn.configure(state='disabled')
+        self.cancel_btn.configure(state='normal')
         self.progress.configure(mode='indeterminate'); self.progress.start()
         def worker():
             try:
@@ -166,7 +187,9 @@ class App(ttk.Frame):
                     self.progress.configure(mode='indeterminate'); self.progress.start()
             else:
                 kind,message=event; self.busy=False; self.progress.stop()
-                self.merge_btn.configure(state='normal'); self.scan_btn.configure(state='normal'); self.compare_btn.configure(state='normal'); self.cancel_btn.configure(state='disabled')
+                self.merge_btn.configure(state='normal'); self.scan_btn.configure(state='normal')
+                self.compare_btn.configure(state='normal'); self.compare_batch_btn.configure(state='normal')
+                self.cancel_btn.configure(state='disabled')
                 label={'done':'Đã xuất kết quả','cancel':'Đã hủy','error':'Thất bại'}[kind]
                 self.log(f'{label}: {message}'); self.status.configure(text=label)
                 (messagebox.showerror if kind=='error' else messagebox.showinfo)(label,message)

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from sohoa.domain import HEADERS, AppError
-from sohoa.application import merge, compare, JobContext
+from sohoa.application import merge, compare, compare_batch, JobContext
 from sohoa.report import ReportWriter
 from sohoa.domain import MatchResult, REVIEW, StudentRecord
 
@@ -21,6 +21,60 @@ def row(name='Nguyễn Văn An', dob='01/02/1980', year='1995', council='THCS A'
     return v
 
 class WorkflowTests(unittest.TestCase):
+    def test_batch_compare_matches_years_and_names_reports_by_year(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); sources=root/'sources'; schools=root/'schools'
+            sources.mkdir(); schools.mkdir()
+            write_input(sources/'THCS.CQ.1987_output.xlsx',
+                        [row(name='Học sinh 1987',year='1987')],4)
+            write_input(sources/'THCS.CQ.1989_output.xlsx',
+                        [row(name='Học sinh 1989',year='1989')],4)
+            write_input(sources/'THCS.CQ.1990_output.xlsx',
+                        [row(name='Không có trường gửi',year='1990')],4)
+            write_input(schools/'1987.xlsx',
+                        [row(name='Học sinh 1987',year='1987')])
+            write_input(schools/'1988.xlsx',
+                        [row(name='Không có nguồn',year='1988')])
+            write_input(schools/'1989.xlsx',
+                        [row(name='Học sinh 1989',year='1989')])
+
+            output=compare_batch(sources,schools,root/'out')
+
+            self.assertEqual({path.name for path in output.glob('*_Check.xlsx')},
+                             {'1987_Check.xlsx','1989_Check.xlsx'})
+            manifest=json.loads((output/'pham_vi.json').read_text(encoding='utf-8'))
+            self.assertEqual(manifest['skipped_school_years'],['1988'])
+            self.assertEqual(manifest['skipped_source_years'],['1990'])
+            for year in ('1987','1989'):
+                wb=load_workbook(output/f'{year}_Check.xlsx',read_only=True)
+                self.assertEqual(wb['Tong_hop']['B2'].value,year)
+                self.assertEqual(wb['Tong_hop']['B7'].value,1)
+                wb.close()
+
+    def test_merge_reads_only_first_data_sheet(self):
+        from sohoa.excel import records
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); data=root/'data'; data.mkdir()
+            source=data/'source.xlsx'
+            write_input(source,[row(name='Học sinh trong Data')])
+            wb=load_workbook(source)
+            wb.active.title='temp'
+            wb.active.title='data'
+            ws=wb.create_sheet('trượt')
+            ws.append(HEADERS); ws.append(row(name='Học sinh trong trượt'))
+            wb.save(source); wb.close()
+
+            parsed=list(records(source,1,canonical=True))
+            self.assertEqual(len(parsed),1)
+            self.assertEqual(parsed[0].values[4],'Học sinh trong Data')
+
+            output=merge(data,root/'out')
+            wb=load_workbook(output/'1995.xlsx')
+            self.assertEqual(wb['Data'].max_row,2)
+            self.assertEqual(wb['Data']['E2'].value,'Học sinh trong Data')
+            wb.close()
+
     def test_year_named_sheet_is_read_and_lineage_preserves_name(self):
         from sohoa.excel import records, inspect
         with tempfile.TemporaryDirectory() as tmp:

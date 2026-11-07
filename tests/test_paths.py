@@ -56,6 +56,9 @@ class ConfigurationPathTests(unittest.TestCase):
             try:
                 os.chdir(dist)
                 app = App(root, config_dir=config)
+                self.assertEqual(app.tabs.tab(2, 'text'), '3. Đối soát theo lô')
+                self.assertEqual(app.source_dir.get(), '')
+                self.assertEqual(app.school_dir.get(), '')
                 self.assertTrue(Path(app.data.get()).is_dir(), f'Missing data folder: {app.data.get()}')
                 alias = Path(app.alias.get())
                 self.assertTrue(alias.is_file(), f'GUI selects nonexistent CSV: {alias}')

@@ -11,8 +11,8 @@ from .domain import HEADERS, IDENTITY, StudentRecord, StructureError, AppError, 
 MAX_ROWS = 1_048_576
 
 def data_sheet(wb, path):
-    if wb.sheetnames == ['Data', 'THONGKE']:
-        return wb['Data']
+    if wb.worksheets and wb.worksheets[0].title.casefold() == 'data':
+        return wb.worksheets[0]
     if len(wb.worksheets) != 1:
         raise StructureError([f'{path}: cần duy nhất một sheet dữ liệu (tên bất kỳ); hiện có {wb.sheetnames}'])
     return wb.worksheets[0]
@@ -113,11 +113,14 @@ def records(path, header_row, mapping=None, canonical=False, log=lambda _: None,
 
 
 def merge_records(path, log=lambda _: None):
-    """Read canonical data sheets; ignore instructions and lookup sheets."""
+    """Read canonical sheets, using only the first Data tab when present."""
     wb = load_workbook(path, read_only=True, data_only=False)
     sheets = []
     try:
-        for ws in wb.worksheets:
+        worksheets = wb.worksheets
+        if worksheets and worksheets[0].title.casefold() == 'data':
+            worksheets = worksheets[:1]
+        for ws in worksheets:
             row_no = _canonical_header_row(ws)
             if row_no is not None:
                 sheets.append((ws.title, row_no))

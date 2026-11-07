@@ -9,11 +9,11 @@ main.py                    Điểm khởi động
 sohoa/
   domain.py                DTO, lỗi nghiệp vụ, chuẩn hóa tên/ngày sinh
   matching.py              Quyết định ghép và phân loại, không phụ thuộc Excel/UI
-  application.py           Hai interface nghiệp vụ: merge(), compare()
+  application.py           Nghiệp vụ: merge(), compare(), compare_batch()
   storage.py               SQLite, chỉ mục tìm kiếm và truy vết
   excel.py                 Đọc/kiểm tra Excel, ánh xạ, ghi file an toàn
   report.py                Báo cáo đối soát theo nguồn, thống kê và hồ sơ phân loại
-  presentation.py          Hai tab ttk, worker, Queue, hủy và log
+  presentation.py          Ba tab ttk, worker, Queue, hủy và log
 config/schools.csv          Bảng ánh xạ trường do người dùng duyệt
 tests/
   test_matching.py         Kiểm thử chính sách ghép
@@ -98,6 +98,14 @@ Tên so sau NFC, chữ hoa, gọn khoảng trắng; không bỏ dấu, đảo t�
 Ghép chính xác theo bộ ba trước. Nếu một hồ sơ nguồn có nhiều dòng file trường trùng bộ ba, các dòng đó được tính là khớp thông tin và ghi rõ số lượng cùng từng vị trí trong ghi chú; hồ sơ nguồn chỉ tính một lần. Nếu nhiều hồ sơ nguồn cùng bộ ba thì chỉ ghép khi số hiệu bằng phân biệt duy nhất ở cả hai bên, nếu không cần xác minh. Ứng viên có ít nhất hai thành phần định danh giống nhau (không tính hai ô trống) hoặc số hiệu bằng trùng. Không tự ghép gần đúng, không xóa trùng, không dùng số hiệu bằng để biến bộ ba sai thành khớp.
 
 Nguồn chuẩn thiếu, trường có: ghi đề nghị bổ sung trong bằng chứng ứng viên, chưa xác nhận vì chưa đủ bộ ba. Nguồn có, trường thiếu: ghi trường thiếu thông tin. Ứng dụng không sửa nguồn, không có màn hình duyệt. Các ứng viên đã tham gia nhóm xác minh không đồng thời bị kết luận chỉ có một bên; một ứng viên có thể xuất hiện ở nhiều nhóm, nhưng không được coi là cặp đã ghép.
+
+## Pha 3 — đối soát theo lô
+
+1. Ở tab **Đối soát theo lô**, chọn thư mục nguồn chuẩn và thư mục trường gửi.
+2. Nguồn cần có tên dạng `THCS.CQ.1987_output.xlsx`; file trường tương ứng cần tên `1987.xlsx`. Chương trình chỉ xử lý các năm có đủ cả hai file; năm chỉ có ở một thư mục được bỏ qua.
+3. Bấm **Đối soát các năm trùng**. Mỗi năm được xử lý độc lập, tối đa 4 năm chạy đồng thời; kết quả nằm chung trong thư mục đợt chạy mới với tên như `1987_Check.xlsx`. Mỗi file sử dụng tiêu đề ở dòng 1 và tự ánh xạ các cột theo tên.
+
+`pham_vi.json` liệt kê các năm đã đối soát, các năm bị bỏ qua và lỗi nếu có. Nếu một năm lỗi cấu trúc, các năm còn lại vẫn được xử lý; đợt chạy ghi trạng thái chưa đầy đủ và tạo `bao_cao_loi_<năm>.xlsx` cho năm lỗi.
 
 ## Báo cáo
 

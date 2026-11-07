@@ -2,6 +2,7 @@
 import csv
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -188,7 +189,10 @@ def merge(data_dir, output, alias_file=None, context=None):
         state(folder, f'{"CHƯA ĐẦY ĐỦ" if issues else "HOÀN TẤT"}: {total_rows} dòng; {unknown} dòng chưa xác định năm.')
         return folder
     except Exception as exc:
-        state(folder,f'CHƯA HOÀN TẤT: {exc}')
+        if (folder/'bao_cao_loi.xlsx').exists():
+            state(folder,'TỪ CHỐI ĐỐI SOÁT — yêu cầu sửa cấu trúc và gửi lại.')
+        else:
+            state(folder,f'CHƯA HOÀN TẤT: {exc}')
         raise
     finally:
         store.close()
@@ -202,43 +206,124 @@ def _lineage(path):
         return {row: f'{Path(f).name} | {s} | dòng {r}' for row,f,s,r in db.execute('''SELECT e.output_row,r.file,r.sheet,r.rownum FROM exports e JOIN records r ON e.record_id=r.id WHERE e.output_file=?''',(Path(path).name,))}
     finally: db.close()
 
+def _compare_pair(source_file, school_file, folder, school_header, mapping, years,
+                  ctx, database_name, output_name, error_name):
+    store=RecordStore(folder/database_name)
+    counts={'source':0,'school':0}; excluded={'source':0,'school':0}
+    try:
+        for side,path,header_row,colmap in (
+                ('source',source_file,1,None),('school',school_file,school_header,mapping)):
+            ctx.log(f'Đọc {side}: {Path(path).name}')
+            lineage=_lineage(path) if side=='source' else {}
+            header=canonical_header_row(path) if side=='source' else header_row
+            for rec in records(path,header,mapping=colmap,canonical=side=='source',log=ctx.log):
+                ctx.check()
+                if years is not None and rec.keys[2].isdigit() and int(rec.keys[2]) not in years:
+                    excluded[side]+=1; continue
+                if rec.row in lineage:
+                    rec=StudentRecord(rec.values,rec.file,rec.sheet,rec.row,lineage[rec.row])
+                store.add(rec,side); counts[side]+=1
+            store.db.commit()
+        scope=', '.join(map(str,sorted(years))) if years is not None else 'Tất cả năm trong file'
+        writer=ReportWriter(folder,scope,counts['source'],counts['school'],output_name=output_name)
+        for index,result in enumerate(reconcile(store,ctx.check),1):
+            writer.add(result)
+            if index%500==0: ctx.log(f'Đã phân loại {index} kết quả')
+        ctx.check(); writer.finish(ctx.check)
+        return {'counts':counts,'excluded':excluded,'years':scope}
+    except StructureError as exc:
+        error_report(folder/error_name,exc.issues)
+        raise AppError(f'{exc}\n{folder/error_name}') from exc
+    finally: store.close()
+
 def compare(source_files, school_file, output, school_header=1, mapping=None, years=None, context=None):
     ctx=context or JobContext()
     years=None if years is None else set(years)
     if years is not None and not years:
         raise AppError('Phạm vi năm không được để trống.')
     folder=run_folder(output,'Doi_soat')
-    store=RecordStore(folder/'doi_soat.sqlite')
-    counts={'source':0,'school':0}; excluded={'source':0,'school':0}
     try:
         if len(source_files)!=1: raise AppError('Hãy chọn đúng một file nguồn chuẩn.')
-        for side,paths,school_header_row,colmap in [('source',source_files,1,None),('school',[school_file],school_header,mapping)]:
-            for path in paths:
-                ctx.log(f'Đọc {side}: {Path(path).name}')
-                lineage=_lineage(path) if side=='source' else {}
-                header=canonical_header_row(path) if side=='source' else school_header_row
-                for rec in records(path,header,mapping=colmap,canonical=side=='source',log=ctx.log):
-                    ctx.check()
-                    if years is not None and rec.keys[2].isdigit() and int(rec.keys[2]) not in years:
-                        excluded[side]+=1; continue
-                    if rec.row in lineage:
-                        rec=StudentRecord(rec.values,rec.file,rec.sheet,rec.row,lineage[rec.row])
-                    store.add(rec,side); counts[side]+=1
-            store.db.commit()
-        scope=', '.join(map(str,sorted(years))) if years is not None else 'Tất cả năm trong file'
-        output_name=f'{Path(source_files[0]).stem}_Check'
-        writer=ReportWriter(folder,scope,counts['source'],counts['school'],output_name=output_name)
-        for index,result in enumerate(reconcile(store,ctx.check),1):
-            writer.add(result)
-            if index%500==0: ctx.log(f'Đã phân loại {index} kết quả')
-        ctx.check(); writer.finish(ctx.check)
-        (folder/'pham_vi.json').write_text(json.dumps({'years':scope,'counts':counts,'excluded':excluded,'columns':[HEADERS[i] for i in IDENTITY]},ensure_ascii=False,indent=2),encoding='utf-8')
+        result=_compare_pair(source_files[0],school_file,folder,school_header,mapping,years,ctx,
+                             'doi_soat.sqlite',f'{Path(source_files[0]).stem}_Check',
+                             'bao_cao_loi.xlsx')
+        (folder/'pham_vi.json').write_text(json.dumps({
+            'years':result['years'],'counts':result['counts'],'excluded':result['excluded'],
+            'columns':[HEADERS[i] for i in IDENTITY]
+        },ensure_ascii=False,indent=2),encoding='utf-8')
         state(folder,'HOÀN TẤT — chỉ đối soát họ tên, ngày sinh, năm tốt nghiệp.')
         return folder
-    except StructureError as exc:
-        error_report(folder/'bao_cao_loi.xlsx',exc.issues)
-        state(folder,'TỪ CHỐI ĐỐI SOÁT — yêu cầu sửa cấu trúc và gửi lại.')
-        raise AppError(f'{exc}\n{folder}') from exc
     except Exception as exc:
-        state(folder,f'CHƯA HOÀN TẤT: {exc}'); raise
-    finally: store.close()
+        state(folder,f'CHƯA HOÀN TẤT: {exc}')
+        raise
+
+def _year_files(directory, pattern, description):
+    folder=Path(directory)
+    if not folder.is_dir():
+        raise AppError(f'Không tìm thấy thư mục {description}: {folder}')
+    found={}
+    for path in sorted(folder.iterdir(),key=lambda item:item.name.casefold()):
+        if not path.is_file():
+            continue
+        match=re.fullmatch(pattern,path.name,re.IGNORECASE)
+        if not match:
+            continue
+        year=match.group(1)
+        if year in found:
+            raise AppError(f'Trùng năm {year} trong thư mục {description}: {found[year].name}, {path.name}')
+        found[year]=path
+    return found
+
+def compare_batch(source_dir, school_dir, output, school_header=1, mapping=None, context=None):
+    ctx=context or JobContext()
+    sources=_year_files(source_dir,r'THCS\.CQ\.(\d{4})_output\.xlsx','nguồn')
+    schools=_year_files(school_dir,r'(\d{4})\.xlsx','trường gửi')
+    if not sources:
+        raise AppError(f'Không tìm thấy file nguồn dạng THCS.CQ.<năm>_output.xlsx trong: {source_dir}')
+    pairs=[(year,sources[year],schools[year]) for year in sorted(sources.keys() & schools.keys())]
+    if not pairs:
+        raise AppError('Không có năm nào trùng giữa thư mục nguồn và thư mục trường gửi.')
+
+    folder=run_folder(output,'Doi_soat')
+    results={}; failures=[]
+    try:
+        workers=min(4,len(pairs))
+        with ThreadPoolExecutor(max_workers=workers,thread_name_prefix='doi-soat') as executor:
+            futures={
+                executor.submit(
+                    _compare_pair,source,school,folder,school_header,mapping,{int(year)},ctx,
+                    f'doi_soat_{year}.sqlite',f'{year}_Check',f'bao_cao_loi_{year}.xlsx'
+                ):year
+                for year,source,school in pairs
+            }
+            for completed,future in enumerate(as_completed(futures),1):
+                year=futures[future]
+                try:
+                    results[year]=future.result()
+                    ctx.log(f'Hoàn tất đối soát năm {year}',completed,len(pairs))
+                except Exception as exc:
+                    failures.append((year,exc))
+                    ctx.log(f'Lỗi đối soát năm {year}: {exc}',completed,len(pairs))
+
+        skipped_school_years=sorted(schools.keys()-sources.keys())
+        skipped_source_years=sorted(sources.keys()-schools.keys())
+        (folder/'pham_vi.json').write_text(json.dumps({
+            'matched_years':sorted(results),
+            'skipped_school_years':skipped_school_years,
+            'skipped_source_years':skipped_source_years,
+            'failures':{year:str(exc) for year,exc in failures}
+        },ensure_ascii=False,indent=2),encoding='utf-8')
+        cancellations=[exc for _,exc in failures if isinstance(exc,Cancelled)]
+        if cancellations:
+            state(folder,'ĐÃ HỦY — các báo cáo đang xử lý chưa hoàn tất.')
+            raise cancellations[0]
+        if failures:
+            state(folder,f'CHƯA ĐẦY ĐỦ: lỗi {len(failures)} năm; xem bao_cao_loi_<năm>.xlsx nếu có.')
+            details='; '.join(f'{year}: {exc}' for year,exc in failures)
+            raise AppError(f'Đối soát lô có lỗi: {details}\n{folder}')
+        state(folder,f'HOÀN TẤT — đã đối soát {len(results)} năm; chỉ dùng họ tên, ngày sinh, năm tốt nghiệp.')
+        return folder
+    except Exception as exc:
+        if not failures:
+            state(folder,f'CHƯA HOÀN TẤT: {exc}')
+        raise
