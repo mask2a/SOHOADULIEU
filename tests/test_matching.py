@@ -23,13 +23,22 @@ class MatchingTests(unittest.TestCase):
         result=self.run_case([student()],[student(' NGUYỄN  VĂN AN ','1/2/1980')])
         self.assertEqual([r.status for r in result],[NORMALIZED])
 
+    def test_location_shortens_windows_lineage_to_filename(self):
+        record=StudentRecord(
+            student().values, 'ignored.xlsx', 'Data', 2,
+            r'Tệp: C:\Users\Admin\Desktop\SOHOA\output\TACH_NAM_1\1987.xlsx | Sheet: Data | Dòng: 1716'
+        )
+        self.assertEqual(record.location,'1987.xlsx | Data | dòng 1716')
+
     def test_auxiliary_differences_ignored(self):
         result=self.run_case([student(cert='001')],[student(cert='999')])
         self.assertEqual(result[0].status,MATCH)
 
     def test_wrong_birth_never_matches_even_with_certificate(self):
         result=self.run_case([student(cert='001')],[student(dob='02/02/1980',cert='001')])
-        self.assertEqual([r.status for r in result],[REVIEW])
+        self.assertEqual([r.status for r in result],[REVIEW,REVIEW])
+        self.assertEqual(sum(r.source is not None for r in result),1)
+        self.assertEqual(sum(r.school is not None for r in result),1)
 
     def test_duplicates_not_paired_by_order(self):
         result=self.run_case([student(),student()],[student(),student()])
@@ -50,7 +59,7 @@ class MatchingTests(unittest.TestCase):
 
     def test_missing_source_birth_proposes_supplement(self):
         result=self.run_case([student(dob='')],[student()])
-        self.assertEqual(result[0].status,REVIEW)
-        self.assertIn('bổ sung',result[0].reason)
+        self.assertEqual(sum(r.status==REVIEW for r in result),2)
+        self.assertTrue(any('bổ sung' in r.reason for r in result))
 
 if __name__=='__main__': unittest.main()

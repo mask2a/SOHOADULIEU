@@ -26,19 +26,19 @@ class App(ttk.Frame):
         self.output=tk.StringVar(value=self.settings.get('output',str(Path.cwd()/'output')))
         self.data=tk.StringVar(value=str(resolve_data(self.settings.get('data'))))
         self.alias=tk.StringVar(value=str(resolve_alias(self.config_dir,self.settings.get('alias'))))
-        self.school=tk.StringVar(); self.header=tk.StringVar(value='1'); self.years=tk.StringVar(value='1984-2005')
+        self.school=tk.StringVar(); self.header=tk.StringVar(value='1'); self.years=tk.StringVar()
         tabs=ttk.Notebook(self); tabs.pack(fill='x')
         a=ttk.Frame(tabs,padding=10); b=ttk.Frame(tabs,padding=10)
         tabs.add(a,text='1. Gộp và tách theo năm'); tabs.add(b,text='2. Đối soát và báo cáo')
         self.path_row(a,0,'Thư mục dữ liệu',self.data,lambda: self.choose_dir(self.data))
         ttk.Label(a,text='Gộp các file Excel, tách theo năm tốt nghiệp cột M: 1984.xlsx, 1985.xlsx…').grid(row=2,column=0,columnspan=3,sticky='w')
-        self.merge_btn=ttk.Button(a,text='Gộp và tách',command=self.start_merge); self.merge_btn.grid(row=3,column=0,pady=8,sticky='w')
+        self.merge_btn=ttk.Button(a,text='Gộp và tách theo năm',command=self.start_merge); self.merge_btn.grid(row=3,column=0,pady=8,sticky='w')
         self.scan_btn=ttk.Button(a,text='Quét danh sách tên trường để duyệt',command=self.start_scan)
         self.scan_btn.grid(row=3,column=1,pady=8,sticky='w')
-        self.source_label=ttk.Label(b,text='Chưa chọn nguồn chuẩn',wraplength=650)
+        self.source_label=ttk.Label(b,text='Chưa chọn file nguồn chuẩn',wraplength=650)
         self.source_label.grid(row=0,column=1,columnspan=2,sticky='w')
-        ttk.Button(b,text='Chọn nguồn chuẩn',command=self.choose_sources).grid(row=0,column=0,sticky='w')
-        self.path_row(b,1,'File trường gửi',self.school,self.choose_school)
+        ttk.Button(b,text='Chọn file nguồn chuẩn',command=self.choose_sources).grid(row=0,column=0,sticky='w')
+        self.path_row(b,1,'File trường gửi theo năm',self.school,self.choose_school)
         ttk.Label(b,text='Dòng tiêu đề').grid(row=2,column=0,sticky='w')
         ttk.Spinbox(b,from_=1,to=100,textvariable=self.header,width=8).grid(row=2,column=1,sticky='w')
         ttk.Button(b,text='Đọc tiêu đề / Ánh xạ',command=self.load_headers).grid(row=2,column=2)
@@ -50,7 +50,7 @@ class App(ttk.Frame):
             combo.grid(row=row,column=1,sticky='ew'); self.mapvars[i]=(var,combo)
         ttk.Label(b,text='Năm kiểm tra').grid(row=4,column=0,sticky='w')
         ttk.Entry(b,textvariable=self.years).grid(row=4,column=1,sticky='ew')
-        ttk.Label(b,text='Ví dụ: 1984-2005 hoặc 1990,1992').grid(row=4,column=2)
+        ttk.Label(b,text='Để trống để kiểm tra mọi năm; hoặc nhập năm/khoảng năm').grid(row=4,column=2)
         self.compare_btn=ttk.Button(b,text='Xuất báo cáo đối soát',command=self.start_compare)
         self.compare_btn.grid(row=5,column=0,pady=8,sticky='w')
         self.path_row(self,1,'Thư mục kết quả',self.output,lambda:self.choose_dir(self.output),pack=True)
@@ -78,9 +78,9 @@ class App(ttk.Frame):
         if value: var.set(value)
 
     def choose_sources(self):
-        files=filedialog.askopenfilenames(filetypes=[('Excel','*.xlsx')])
-        if files:
-            self.sources=list(files); self.source_label.configure(text='; '.join(Path(p).name for p in files))
+        path=filedialog.askopenfilename(filetypes=[('Excel','*.xlsx')])
+        if path:
+            self.sources=[path]; self.source_label.configure(text=Path(path).name)
 
     def choose_school(self):
         self.choose_file(self.school)
@@ -117,13 +117,19 @@ class App(ttk.Frame):
             if getattr(self,'loaded_school',None)!=(self.school.get(),self.header.get()):
                 raise AppError('Hãy đọc tiêu đề và xác nhận ánh xạ cho file đang chọn.')
             mapping={i:self.column_labels.index(var.get())-1 for i,(var,_) in self.mapvars.items() if var.get() and var.get()!='(Không dùng)'}
-            years=set()
-            for token in self.years.get().split(','):
-                parts=token.strip().split('-')
-                if len(parts)==1: years.add(int(parts[0]))
-                elif len(parts)==2 and int(parts[0])<=int(parts[1]): years.update(range(int(parts[0]),int(parts[1])+1))
-                else: raise ValueError('Khoảng năm không hợp lệ')
-            if not years or not years.issubset(set(range(1984,2006))): raise ValueError('Năm phải thuộc 1984–2005')
+            years=None
+            year_text=self.years.get().strip()
+            if year_text:
+                years=set()
+                for token in year_text.split(','):
+                    parts=token.strip().split('-')
+                    if len(parts)==1 and parts[0].isdigit():
+                        years.add(int(parts[0]))
+                    elif (len(parts)==2 and all(part.isdigit() for part in parts)
+                          and int(parts[0])<=int(parts[1])):
+                        years.update(range(int(parts[0]),int(parts[1])+1))
+                    else:
+                        raise ValueError('Nhập năm hoặc khoảng năm hợp lệ, ví dụ 1983 hoặc 2026-2030')
             profiles=self.settings.setdefault('mapping_profiles',{})
             profiles[json.dumps(self.loaded_headers,ensure_ascii=False)]={str(k):v for k,v in mapping.items()}
             args=(list(self.sources),self.school.get(),self.output.get(),int(self.header.get()),mapping,years)

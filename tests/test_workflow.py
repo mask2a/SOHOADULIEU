@@ -87,11 +87,134 @@ class WorkflowTests(unittest.TestCase):
             wb=load_workbook(source); self.assertEqual(wb.sheetnames,['Data','THONGKE']); self.assertEqual(wb['Data'].max_row,2); wb.close()
             school=root/'school.xlsx'; write_input(school,[row(dob='02/02/1980')])
             report=compare([source],school,root/'out',years={1995})
-            wb=load_workbook(report/'Bao_cao_001.xlsx')
-            self.assertEqual(wb.sheetnames,['Tong_hop','Lech_thong_tin','Thua_Thieu'])
-            self.assertEqual(wb['Thua_Thieu']['A2'].value,REVIEW)
-            self.assertEqual(wb['Lech_thong_tin']['E2'].fill.fgColor.rgb,'00FFD966')
-            self.assertIn('dòng 6',wb['Thua_Thieu']['I2'].value)
+            wb=load_workbook(report/'1995_Check.xlsx')
+            self.assertEqual(wb.sheetnames,['Tong_hop','Khop','Chi_co_trong_nguon_chuan',
+                                            'Lech_thong_tin','Truong_khong_co_trong_nguon',
+                                            'Can_xac_minh'])
+            self.assertEqual(wb['Tong_hop'].max_row,14)
+            self.assertEqual(wb['Khop'].max_row,1)
+            self.assertEqual(wb['Lech_thong_tin'].max_row,2)
+            self.assertEqual(wb['Lech_thong_tin']['Y2'].value,REVIEW)
+            self.assertEqual(wb['Lech_thong_tin']['E2'].value,'Nguyễn Văn An')
+            self.assertIn('lệch ngày sinh',wb['Lech_thong_tin']['Z2'].value)
+            self.assertIn('dòng 6',wb['Lech_thong_tin']['AD2'].value)
+            self.assertEqual(wb['Truong_khong_co_trong_nguon'].max_row,2)
+            self.assertIn('Dữ liệu trường gửi lên mà không có trong dữ liệu nguồn chuẩn',
+                          wb['Truong_khong_co_trong_nguon']['A1'].value)
+            self.assertEqual(wb['Can_xac_minh'].max_row,2)
+            wb.close()
+
+    def test_compare_single_source_with_header_on_row_four_to_split_school_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); source=root/'THCS.CQ.1987_output.xlsx'; school=root/'1987.xlsx'
+            write_input(source,[row(year='1987')],4)
+            wb=Workbook(); ws=wb.active; ws.title='Data'
+            ws.append((*HEADERS,'Nguồn dữ liệu'))
+            ws.append((*row(year='1987'),'Tệp: source.xlsx | Sheet: Data | Dòng: 6'))
+            stats=wb.create_sheet('THONGKE'); stats.append(['STT','TÊN TRƯỜNG','SỐ LƯỢNG'])
+            wb.save(school); wb.close()
+            report=compare([source],school,root/'out',years={1987})
+            wb=load_workbook(report/'THCS.CQ.1987_output_Check.xlsx')
+            self.assertEqual(wb['Tong_hop'].max_row,14)
+            self.assertEqual(wb['Khop'].max_row,2)
+            self.assertEqual(wb['Chi_co_trong_nguon_chuan'].max_row,2)
+            self.assertEqual(wb['Lech_thong_tin'].max_row,1)
+            self.assertEqual(wb['Truong_khong_co_trong_nguon'].max_row,2)
+            self.assertEqual(wb['Can_xac_minh'].max_row,1)
+            self.assertEqual(wb['Khop']['A2'].value,'Khớp hoàn toàn')
+            headers=[cell.value for cell in wb['Khop'][1]]
+            school_location=wb['Khop'].cell(2,headers.index('Vị trí file trường')+1).value
+            self.assertEqual(school_location,'1987.xlsx | Data | dòng 2')
+            self.assertNotIn('C:\\Users\\Admin',school_location)
+            wb.close()
+
+    def test_compare_rejects_multiple_source_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); source=root/'source.xlsx'; school=root/'school.xlsx'
+            write_input(source,[row()]); write_input(school,[row()])
+            with self.assertRaisesRegex(AppError,'đúng một file nguồn chuẩn'):
+                compare([source,source],school,root/'out',years={1995})
+
+    def test_source_only_records_are_in_separate_sheet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); source=root/'source.xlsx'; school=root/'school.xlsx'
+            write_input(source,[row()])
+            write_input(school,[row(name='Lê Thị B',dob='03/04/1982',year='1996')])
+            report=compare([source],school,root/'out')
+            wb=load_workbook(report/'source_Check.xlsx')
+            self.assertEqual(wb['Khop'].max_row,1)
+            self.assertEqual(wb['Chi_co_trong_nguon_chuan'].max_row,3)
+            self.assertEqual(wb['Chi_co_trong_nguon_chuan']['A3'].value,'1')
+            self.assertEqual(wb['Chi_co_trong_nguon_chuan']['E3'].value,'Nguyễn Văn An')
+            self.assertEqual(wb['Truong_khong_co_trong_nguon'].max_row,3)
+            self.assertEqual(wb['Truong_khong_co_trong_nguon']['E3'].value,'Lê Thị B')
+            self.assertEqual(wb['Lech_thong_tin'].max_row,1)
+            wb.close()
+
+    def test_exact_identity_among_candidates_counts_as_match_and_lists_short_locations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); source=root/'source.xlsx'; school=root/'school.xlsx'
+            write_input(source,[row(name='Lê Thị Hồng An',dob='24/11/1973',year='1987')])
+            write_input(school,[
+                row(name='LÊ THỊ HỒNG AN',dob='24/11/1973',year='1987'),
+                row(name='LÊ THỊ HỒNG AN',dob='24/11/1973',year='1987'),
+                row(name='Vũ Đoàn Trung',dob='24/11/1973',year='1987'),
+                row(name='Nguyễn Văn Khác',dob='24/11/1973',year='1987'),
+            ])
+            report=compare([source],school,root/'out',years={1987})
+            wb=load_workbook(report/'source_Check.xlsx')
+            try:
+                self.assertEqual(wb['Khop'].max_row,2)
+                headers=[cell.value for cell in wb['Khop'][1]]
+                note_column=headers.index('Ghi chú đối soát')+1
+                note=wb['Khop'].cell(2,note_column).value
+                self.assertIn('Có 2 hồ sơ file trường khớp thông tin',note)
+                self.assertIn('school.xlsx | Data | dòng 2',note)
+                self.assertIn('school.xlsx | Data | dòng 3',note)
+                self.assertNotIn(str(root),note)
+                self.assertFalse(any(
+                    str(root).casefold() in str(cell.value).casefold()
+                    for sheet in wb.worksheets for row_cells in sheet.iter_rows()
+                    for cell in row_cells if cell.value is not None
+                ))
+                self.assertEqual(wb['Lech_thong_tin'].max_row,1)
+                self.assertEqual(wb['Can_xac_minh'].max_row,3)
+                self.assertEqual(wb['Tong_hop']['B7'].value,1)
+                self.assertEqual(wb['Tong_hop']['B8'].value,2)
+            finally:
+                wb.close()
+
+    def test_report_lists_duplicate_candidate_sources_once_each(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); source=root/'1987.xlsx'; school=root/'school.xlsx'
+            write_input(source,[row(),row()])
+            write_input(school,[row()])
+            report=compare([source],school,root/'out',years={1995})
+            wb=load_workbook(report/'1987_Check.xlsx')
+            self.assertEqual(wb['Tong_hop']['B3'].value,2)
+            self.assertEqual(wb['Tong_hop']['B4'].value,1)
+            self.assertEqual(wb['Tong_hop']['B10'].value,2)
+            self.assertEqual(wb['Lech_thong_tin'].max_row,3)
+            self.assertEqual(wb['Chi_co_trong_nguon_chuan'].max_row,2)
+            self.assertEqual(wb['Can_xac_minh'].max_row,2)
+            self.assertEqual(wb['Truong_khong_co_trong_nguon'].max_row,2)
+            wb.close()
+
+    def test_compare_has_no_year_limit_and_blank_scope_includes_all_years(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); source=root/'source.xlsx'; school=root/'school.xlsx'
+            write_input(source,[row(year='1983'),row(name='Lê Thị B',dob='03/04/1982',year='2026')])
+            write_input(school,[row(year='1983'),row(name='Lê Thị B',dob='03/04/1982',year='2026')])
+            report=compare([source],school,root/'out')
+            metadata=json.loads((report/'pham_vi.json').read_text(encoding='utf-8'))
+            self.assertEqual(metadata['years'],'Tất cả năm trong file')
+            self.assertEqual(metadata['counts'],{'source':2,'school':2})
+            wb=load_workbook(report/'source_Check.xlsx')
+            self.assertEqual(wb['Tong_hop']['B7'].value,2)
+            self.assertEqual(wb['Khop'].max_row,3)
+            self.assertEqual(wb['Chi_co_trong_nguon_chuan'].max_row,2)
+            self.assertEqual(wb['Lech_thong_tin'].max_row,1)
             wb.close()
 
     def test_merge_sorts_by_school_attended_then_sequence(self):
@@ -136,17 +259,17 @@ class WorkflowTests(unittest.TestCase):
             root=Path(tmp); source=root/'source.xlsx'; school=root/'school.xlsx'
             write_input(source,[row()]); write_input(school,[['Nguyễn Văn An','01/02/1980','1995']],headers=['Tên','Sinh','Năm'])
             report=compare([source],school,root/'out',mapping={4:0,6:1,12:2},years={1995})
-            self.assertTrue((report/'Bao_cao_001.xlsx').exists())
+            self.assertTrue((report/'source_Check.xlsx').exists())
             with self.assertRaises(AppError): compare([source],school,root/'out',mapping={4:0},years={1995})
             self.assertTrue(list((root/'out').glob('*/bao_cao_loi.xlsx')))
 
     def test_report_split_and_formula_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             v=row(name='=SUM(1,2)'); record=StudentRecord(tuple(v),'file','Data',2)
-            writer=ReportWriter(tmp,'1995',3,3,row_limit=23)
+            writer=ReportWriter(tmp,'1995',3,0,row_limit=4)
             for _ in range(3): writer.add(MatchResult(REVIEW,source=record))
             paths=writer.finish(); self.assertEqual(len(paths),2)
-            wb=load_workbook(paths[0]); self.assertEqual(wb['Thua_Thieu']['C2'].data_type,'s'); wb.close()
+            wb=load_workbook(paths[0]); self.assertEqual(wb['Lech_thong_tin']['E2'].data_type,'s'); wb.close()
 
     def test_cancel_records_incomplete_state(self):
         from sohoa.domain import Cancelled

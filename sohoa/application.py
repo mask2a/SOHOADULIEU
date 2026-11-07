@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from openpyxl import Workbook
 from .domain import HEADERS, IDENTITY, AppError, Cancelled, StructureError, Progress, StudentRecord, normalize
-from .excel import records, append_text, save_atomic, error_report, MAX_ROWS, merge_records, add_school_statistics, setup_data_layout
+from .excel import records, append_text, save_atomic, error_report, MAX_ROWS, merge_records, add_school_statistics, setup_data_layout, canonical_header_row
 from .storage import RecordStore
 from .matching import reconcile
 from .report import ReportWriter
@@ -199,35 +199,35 @@ def _lineage(path):
     if not dbpath.exists(): return {}
     db=sqlite3.connect(f'{dbpath.resolve().as_uri()}?mode=ro',uri=True)
     try:
-        return {row: f'{f} | {s} | dòng {r}' for row,f,s,r in db.execute('''SELECT e.output_row,r.file,r.sheet,r.rownum FROM exports e JOIN records r ON e.record_id=r.id WHERE e.output_file=?''',(Path(path).name,))}
+        return {row: f'{Path(f).name} | {s} | dòng {r}' for row,f,s,r in db.execute('''SELECT e.output_row,r.file,r.sheet,r.rownum FROM exports e JOIN records r ON e.record_id=r.id WHERE e.output_file=?''',(Path(path).name,))}
     finally: db.close()
 
 def compare(source_files, school_file, output, school_header=1, mapping=None, years=None, context=None):
     ctx=context or JobContext()
-    years=set(range(1984,2006)) if years is None else set(years)
-    if not years or not years.issubset(set(range(1984,2006))):
-        raise AppError('Phạm vi năm phải thuộc 1984–2005 và không rỗng.')
+    years=None if years is None else set(years)
+    if years is not None and not years:
+        raise AppError('Phạm vi năm không được để trống.')
     folder=run_folder(output,'Doi_soat')
     store=RecordStore(folder/'doi_soat.sqlite')
     counts={'source':0,'school':0}; excluded={'source':0,'school':0}
     try:
-        if not source_files: raise AppError('Chưa chọn file nguồn chuẩn.')
-        if len({str(Path(p).resolve()).casefold() for p in source_files})!=len(source_files):
-            raise AppError('Danh sách nguồn chuẩn có file trùng.')
-        for side,paths,header,colmap in [('source',source_files,1,None),('school',[school_file],school_header,mapping)]:
+        if len(source_files)!=1: raise AppError('Hãy chọn đúng một file nguồn chuẩn.')
+        for side,paths,school_header_row,colmap in [('source',source_files,1,None),('school',[school_file],school_header,mapping)]:
             for path in paths:
                 ctx.log(f'Đọc {side}: {Path(path).name}')
                 lineage=_lineage(path) if side=='source' else {}
+                header=canonical_header_row(path) if side=='source' else school_header_row
                 for rec in records(path,header,mapping=colmap,canonical=side=='source',log=ctx.log):
                     ctx.check()
-                    if years and rec.keys[2].isdigit() and int(rec.keys[2]) not in years:
+                    if years is not None and rec.keys[2].isdigit() and int(rec.keys[2]) not in years:
                         excluded[side]+=1; continue
                     if rec.row in lineage:
                         rec=StudentRecord(rec.values,rec.file,rec.sheet,rec.row,lineage[rec.row])
                     store.add(rec,side); counts[side]+=1
             store.db.commit()
-        scope=', '.join(map(str,sorted(years)))
-        writer=ReportWriter(folder,scope,counts['source'],counts['school'])
+        scope=', '.join(map(str,sorted(years))) if years is not None else 'Tất cả năm trong file'
+        output_name=f'{Path(source_files[0]).stem}_Check'
+        writer=ReportWriter(folder,scope,counts['source'],counts['school'],output_name=output_name)
         for index,result in enumerate(reconcile(store,ctx.check),1):
             writer.add(result)
             if index%500==0: ctx.log(f'Đã phân loại {index} kết quả')

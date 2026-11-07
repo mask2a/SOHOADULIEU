@@ -3,10 +3,30 @@ from .domain import MatchResult, MATCH, NORMALIZED, REVIEW, ONLY_SOURCE, ONLY_SC
 
 def reconcile(store, check=lambda: None):
     # Complete exact matches first, so approximate candidates cannot consume them.
+    completed_single_source_keys = set()
     for school_id, school in store.query("side='school' AND valid=1"):
         check()
         sources = store.exact(school, 'source')
         schools = store.exact(school, 'school')
+        if len(sources) == 1 and schools:
+            if school.keys in completed_single_source_keys:
+                continue
+            completed_single_source_keys.add(school.keys)
+            source_id, source = sources[0]
+            store.mark([source_id, *(record_id for record_id, _ in schools)])
+            matching_schools = [record for _, record in schools]
+            raw_equal = all(source.values[i] == matching_schools[0].values[i] for i in IDENTITY)
+            locations = '; '.join(record.location for record in matching_schools)
+            reason = (f'Có {len(matching_schools)} hồ sơ file trường khớp thông tin: '
+                      f'{locations}')
+            yield MatchResult(
+                MATCH if raw_equal else NORMALIZED,
+                source,
+                matching_schools[0],
+                reason,
+                matching_schools=matching_schools,
+            )
+            continue
         pairs = []
         if len(sources) == len(schools) == 1:
             pairs = sources
@@ -21,25 +41,38 @@ def reconcile(store, check=lambda: None):
             raw_equal = all(source.values[i] == school.values[i] for i in IDENTITY)
             yield MatchResult(MATCH if raw_equal else NORMALIZED, source, school,
                 '' if raw_equal else 'Bộ ba bằng nhau sau chuẩn hóa; xem giá trị gốc.')
-    # Deferred rows remain review even if a candidate has already been matched elsewhere.
+
+    source_candidates = {}
     for school_id, school in store.query("side='school' AND used=0"):
         check()
         candidates = store.candidates(school)
-        if candidates or not school.valid:
-            store.mark([school_id] + [i for i,_ in candidates])
+        store.mark([school_id])
+        if candidates:
+            for source_id, source in candidates:
+                source_candidates.setdefault(source_id, []).append(school)
             reason = 'Chưa xác định được cặp; không tính khớp.'
-            if not school.valid:
-                reason += ' Thiếu/sai họ tên, ngày sinh hoặc năm tốt nghiệp; ngày sinh chỉ năm chưa đủ.'
             if any(any(not r.values[k].strip() and school.values[k].strip() for k in IDENTITY) for _,r in candidates):
                 reason += ' Có thông tin trường đề nghị bổ sung; phải xác minh đúng người trước.'
             if any(any(r.values[k].strip() and not school.values[k].strip() for k in IDENTITY) for _,r in candidates):
                 reason += ' Trường thiếu thông tin so với ứng viên nguồn chuẩn.'
             yield MatchResult(REVIEW, school=school, reason=reason, candidates=[r for _,r in candidates])
+        elif not school.valid:
+            reason = 'Thiếu/sai họ tên, ngày sinh hoặc năm tốt nghiệp; ngày sinh chỉ năm chưa đủ.'
+            yield MatchResult(REVIEW, school=school, reason=reason)
         else:
-            store.mark([school_id])
             yield MatchResult(ONLY_SCHOOL, school=school)
+
     for source_id, source in store.query("side='source' AND used=0"):
         check()
         store.mark([source_id])
-        yield MatchResult(ONLY_SOURCE if source.valid else REVIEW, source=source,
-            reason='' if source.valid else 'Nguồn chuẩn thiếu/sai định danh hoặc ngày sinh chưa đầy đủ.')
+        candidates = source_candidates.get(source_id, [])
+        if candidates:
+            reason = f'Chưa ghép chính xác; có {len(candidates)} hồ sơ trường cần xác minh.'
+            status = REVIEW
+        elif not source.valid:
+            reason = 'Nguồn chuẩn thiếu/sai định danh hoặc ngày sinh chưa đầy đủ.'
+            status = REVIEW
+        else:
+            reason = ''
+            status = ONLY_SOURCE
+        yield MatchResult(status, source=source, reason=reason, candidates=candidates)

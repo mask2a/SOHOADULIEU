@@ -18,6 +18,29 @@ def data_sheet(wb, path):
     return wb.worksheets[0]
 
 
+def _canonical_header_row(ws):
+    expected = tuple(map(normalize, HEADERS))
+    for row_no, cells in enumerate(ws.iter_rows(min_row=1, max_row=10, values_only=True), 1):
+        if tuple(normalize(value) for value in cells[:24]) == expected:
+            return row_no
+    return None
+
+
+def canonical_header_row(path):
+    try:
+        wb = load_workbook(path, read_only=True, data_only=False)
+    except Exception as exc:
+        raise AppError(f'Không đọc được {path}: {exc}') from exc
+    try:
+        ws = data_sheet(wb, path)
+        row_no = _canonical_header_row(ws)
+        if row_no is None:
+            raise StructureError([f'{path}: không tìm thấy bộ 24 cột chuẩn trong 10 dòng đầu.'])
+        return row_no
+    finally:
+        wb.close()
+
+
 def inspect(path, header_row, sheet_name=None):
     try:
         wb = load_workbook(path, read_only=True, data_only=False)
@@ -95,10 +118,9 @@ def merge_records(path, log=lambda _: None):
     sheets = []
     try:
         for ws in wb.worksheets:
-            for row_no, cells in enumerate(ws.iter_rows(max_row=10, values_only=True), 1):
-                if tuple(normalize(v) for v in cells[:24]) == tuple(map(normalize, HEADERS)):
-                    sheets.append((ws.title, row_no))
-                    break
+            row_no = _canonical_header_row(ws)
+            if row_no is not None:
+                sheets.append((ws.title, row_no))
     finally:
         wb.close()
     if not sheets:

@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from pathlib import PureWindowsPath
 import re
 import unicodedata
 
@@ -51,6 +52,16 @@ def birth(value):
             pass
     return value, False
 
+def short_location(file, sheet, row, origin=''):
+    if origin:
+        parts = [part.strip() for part in text(origin).split('|')]
+        if len(parts) >= 3 and 'dòng' in parts[-1].casefold():
+            filename = re.sub(r'^(?:tệp|file)\s*:\s*', '', parts[0], flags=re.IGNORECASE)
+            sheet_name = re.sub(r'^sheet\s*:\s*', '', parts[1], flags=re.IGNORECASE)
+            row_label = re.sub(r'^dòng\s*:\s*', 'dòng ', parts[-1], flags=re.IGNORECASE)
+            return f'{PureWindowsPath(filename).name} | {sheet_name} | {row_label}'
+    return f'{PureWindowsPath(file).name} | {sheet} | dòng {row}'
+
 @dataclass(frozen=True)
 class StudentRecord:
     values: tuple
@@ -75,7 +86,7 @@ class StudentRecord:
 
     @property
     def location(self):
-        return self.origin or f'{self.file} | {self.sheet} | dòng {self.row}'
+        return short_location(self.file, self.sheet, self.row, self.origin)
 
 @dataclass
 class MatchResult:
@@ -84,6 +95,7 @@ class MatchResult:
     school: StudentRecord | None = None
     reason: str = ''
     candidates: list[StudentRecord] = field(default_factory=list)
+    matching_schools: list[StudentRecord] = field(default_factory=list)
 
 @dataclass(frozen=True)
 class Progress:

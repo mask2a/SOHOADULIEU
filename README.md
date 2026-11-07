@@ -1,6 +1,6 @@
 # Đối soát số hóa tốt nghiệp THCS — Offline
 
-Ứng dụng desktop Python/Tkinter cho dữ liệu 1987–2005. Chỉ đối soát **Họ tên, Ngày sinh, Năm tốt nghiệp**. Các cột khác được giữ nguyên để tham khảo; số hiệu bằng chỉ hỗ trợ phân biệt người trùng khóa hoặc tìm ứng viên.
+Ứng dụng desktop Python/Tkinter xử lý dữ liệu số hóa tốt nghiệp THCS. Chỉ đối soát **Họ tên, Ngày sinh, Năm tốt nghiệp**; không giới hạn năm. Các cột khác được giữ nguyên để tham khảo; số hiệu bằng chỉ hỗ trợ phân biệt người trùng khóa hoặc tìm ứng viên.
 
 ## Cấu trúc và chiều phụ thuộc
 
@@ -12,7 +12,7 @@ sohoa/
   application.py           Hai interface nghiệp vụ: merge(), compare()
   storage.py               SQLite, chỉ mục tìm kiếm và truy vết
   excel.py                 Đọc/kiểm tra Excel, ánh xạ, ghi file an toàn
-  report.py                Báo cáo ba sheet, màu ô, thống kê Pandas
+  report.py                Báo cáo đối soát theo nguồn, thống kê và hồ sơ phân loại
   presentation.py          Hai tab ttk, worker, Queue, hủy và log
 config/schools.csv          Bảng ánh xạ trường do người dùng duyệt
 tests/
@@ -51,11 +51,15 @@ Nếu Git báo có thay đổi cục bộ, chạy `git status` để kiểm tra 
 
 ## Cài và chạy
 
+Trên Windows, cài Python 3 có Tcl/Tk, sau đó mở PowerShell tại thư mục dự án. Tạo môi trường riêng và cài các thư viện:
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
 .\.venv\Scripts\python.exe main.py
 ```
+
+Có thể dùng `requirements.txt` thay cho `requirements-build.txt` nếu chỉ chạy ứng dụng, không build exe. Nếu không muốn cài Python trên máy sử dụng, có thể build exe theo mục **Kiểm thử và build** rồi chuyển `dist\THCS_Offline.exe` sang máy Windows đích; cần thử nghiệm exe trên máy đích trước khi dùng dữ liệu thật.
 
 Có thể chạy `python main.py` trong terminal: nếu Python hiện tại thiếu Pandas/Openpyxl, launcher tự chuyển sang `.venv` của dự án nếu có. VS Code cũng được cấu hình chọn interpreter này. Đường dẫn dữ liệu mặc định lấy theo vị trí mã nguồn/exe, không theo thư mục terminal; cấu hình cũ trỏ tới thư mục không tồn tại sẽ được dò lại. Exe trong `dist` hoặc `dist/fixed` có thể tìm `data` ở gốc dự án. Nếu mang exe sang máy khác, chọn thư mục dữ liệu thực tế bằng nút Chọn.
 
@@ -63,7 +67,7 @@ Cần bản Python có Tcl/Tk (chọn Tcl/Tk khi cài Python trên Windows). Cà
 
 ## Pha 1
 
-Chọn thư mục dữ liệu (ví dụ `DATA1`) và bấm **Gộp và tách**. Chương trình đọc tất cả file `.xlsx`/`.xlsm` trực tiếp trong thư mục, gộp các bản ghi rồi tách theo **Năm tốt nghiệp ở cột M**. Không cần bảng ánh xạ trường. File khóa `~$` và file `.partial.xlsx` được bỏ qua.
+Chọn thư mục dữ liệu (ví dụ `DATA1`) và bấm **Gộp và tách theo năm**. Chương trình đọc tất cả file `.xlsx`/`.xlsm` trực tiếp trong thư mục, gộp các bản ghi rồi tách theo **Năm tốt nghiệp ở cột M**. Không cần bảng ánh xạ trường. File khóa `~$` và file `.partial.xlsx` được bỏ qua.
 
 Mỗi sheet dữ liệu cần đủ 24 cột chuẩn, tiêu đề nằm trong 10 dòng đầu (hỗ trợ dòng 1 của mẫu mới và dòng 4 của mẫu cũ). Sheet hướng dẫn/danh mục không có bộ tiêu đề này được bỏ qua. Bỏ dòng số cột, tiêu đề lặp và dòng trống. Giữ nguyên các bản ghi, kể cả bản ghi trùng.
 
@@ -77,30 +81,38 @@ Các sheet xuất Data và THONGKE có độ rộng cột phù hợp, bật xu�
 
 Sheet **THONGKE** nằm sau **Data**, gồm **STT, TÊN TRƯỜNG, SỐ LƯỢNG**, thống kê theo cột `Tên trường đã học` trong chính file đó. Dòng cuối ghi tổng số trường và tổng số bản ghi. Tên trường được nhóm sau khi chuẩn hóa hoa/thường và khoảng trắng. Bản ghi trống tên trường vẫn được đếm ở dòng `(Chưa có tên trường)` nhưng không cộng vào số trường. Các tổng là số đã tính khi xuất file; nếu sửa Data thì cần chạy xuất lại để cập nhật.
 
-Giữ `truy_vet.sqlite` cùng các file kết quả để đối soát truy về file/sheet/dòng gốc. `pham_vi.json` lưu danh sách đầu vào và các năm đã đọc. File nguồn sai cấu trúc được bỏ toàn bộ và ghi vào báo cáo lỗi, trạng thái đợt chạy là chưa đầy đủ. Phạm vi đối soát hỗ trợ 1984–2005.
+Giữ `truy_vet.sqlite` cùng các file kết quả để đối soát truy về file/sheet/dòng gốc. `pham_vi.json` lưu danh sách đầu vào và các năm đã đọc. File nguồn sai cấu trúc được bỏ toàn bộ và ghi vào báo cáo lỗi, trạng thái đợt chạy là chưa đầy đủ. Pha 1 và Pha 2 không giới hạn năm; báo cáo chỉ đối soát dữ liệu trong các file đã chọn.
 
 ## Pha 2
 
-1. Chọn một hoặc nhiều phần nguồn chuẩn **của cùng một trường**. Không chọn file nhóm chưa xác định. Người vận hành phải xác nhận đúng trường vì ứng dụng không suy đoán trường từ tên file gửi.
-2. Chọn file trường, dòng tiêu đề và bấm đọc tiêu đề. File có duy nhất một sheet, tên bất kỳ.
-3. Xác nhận ánh xạ ba cột bắt buộc; số hiệu bằng tùy chọn. Tên cột không cần giống mẫu. Ánh xạ được nhớ theo bộ tiêu đề.
-4. Chọn năm kiểm tra; xuất báo cáo.
+1. Ở tab **Đối soát và báo cáo**, chọn đúng một file nguồn chuẩn. Chương trình tự tìm bộ 24 cột chuẩn trong 10 dòng đầu, nên hỗ trợ mẫu có tiêu đề ở dòng 4 cũng như file đã tách có tiêu đề ở dòng 1.
+2. Chọn file trường gửi cần đối soát. Với file Pha 1 có sheet `Data` và `THONGKE`, chọn file năm cần so; với file khác, chọn dòng tiêu đề thích hợp.
+3. Bấm đọc tiêu đề, xác nhận ánh xạ **Họ tên**, **Ngày sinh**, **Năm tốt nghiệp**; ánh xạ **Số hiệu bằng** là tùy chọn. Tên cột file trường không cần giống mẫu. Ánh xạ được nhớ theo bộ tiêu đề.
+4. Để trống phạm vi năm để kiểm tra mọi năm có trong hai file, hoặc nhập năm/khoảng năm bất kỳ (ví dụ `1983`, `2026-2030`). Chọn thư mục đầu ra rồi chạy đối soát.
+5. Mở thư mục đợt chạy mới trong thư mục đầu ra. Chỉ sử dụng workbook báo cáo khi `TRANG_THAI.txt` ghi hoàn tất; tên file báo cáo dựa trên tên file nguồn và thêm `_Check.xlsx`.
 
-File sai cấu trúc bị từ chối; `bao_cao_loi.xlsx` liệt kê các lỗi ánh xạ. Dòng thiếu/sai dữ liệu vẫn đi vào cần xác minh. Dòng có năm hợp lệ ngoài phạm vi bị loại và đếm trong `pham_vi.json`; dòng năm trống/sai được giữ để xác minh, không âm thầm bỏ.
+File sai cấu trúc bị từ chối; `bao_cao_loi.xlsx` liệt kê các lỗi ánh xạ. Dòng thiếu/sai dữ liệu vẫn đi vào cần xác minh. Nếu chọn phạm vi năm, dòng có năm hợp lệ ngoài phạm vi được đếm trong `pham_vi.json`; dòng năm trống/sai được giữ để xác minh, không âm thầm bỏ.
 
 Tên so sau NFC, chữ hoa, gọn khoảng trắng; không bỏ dấu, đảo từ hoặc sửa OCR. Ngày chuỗi hiểu ngày/tháng/năm, chấp nhận thêm ISO `YYYY-MM-DD`; không đoán ngày không hợp lệ. Chỉ có năm không đủ để tính khớp. Mã đọc dưới dạng văn bản; số 0 đầu chỉ phục hồi khi Excel có định dạng toàn số 0 rõ ràng, nếu không thì log để kiểm tra.
 
-Ghép chính xác duy nhất theo bộ ba trước. Trùng bộ ba có thể phân biệt bằng số hiệu bằng duy nhất trong nhóm ở cả hai bên. Không được thì cần xác minh. Ứng viên có ít nhất hai thành phần định danh giống nhau (không tính hai ô trống) hoặc số hiệu bằng trùng. Không tự ghép gần đúng, không xóa trùng, không dùng số hiệu bằng để biến bộ ba sai thành khớp.
+Ghép chính xác theo bộ ba trước. Nếu một hồ sơ nguồn có nhiều dòng file trường trùng bộ ba, các dòng đó được tính là khớp thông tin và ghi rõ số lượng cùng từng vị trí trong ghi chú; hồ sơ nguồn chỉ tính một lần. Nếu nhiều hồ sơ nguồn cùng bộ ba thì chỉ ghép khi số hiệu bằng phân biệt duy nhất ở cả hai bên, nếu không cần xác minh. Ứng viên có ít nhất hai thành phần định danh giống nhau (không tính hai ô trống) hoặc số hiệu bằng trùng. Không tự ghép gần đúng, không xóa trùng, không dùng số hiệu bằng để biến bộ ba sai thành khớp.
 
 Nguồn chuẩn thiếu, trường có: ghi đề nghị bổ sung trong bằng chứng ứng viên, chưa xác nhận vì chưa đủ bộ ba. Nguồn có, trường thiếu: ghi trường thiếu thông tin. Ứng dụng không sửa nguồn, không có màn hình duyệt. Các ứng viên đã tham gia nhóm xác minh không đồng thời bị kết luận chỉ có một bên; một ứng viên có thể xuất hiện ở nhiều nhóm, nhưng không được coi là cặp đã ghép.
 
 ## Báo cáo
 
-- `Tong_hop`: thống kê đầu sheet, tỷ lệ khớp/tổng dòng trường và độ bao phủ/tổng dòng chuẩn, kết quả chi tiết phía dưới.
-- `Lech_thong_tin`: giá trị hai phía cạnh nhau, gồm bằng chứng ứng viên chưa xác nhận và khác biệt cách trình bày. Ô có giá trị gốc khác nhau tô vàng. **Ứng viên không phải cặp đã xác nhận.**
-- `Thua_Thieu`: chỉ có trong chuẩn, chỉ có trong trường, cần xác minh; có lý do và nguồn dòng.
+Tên file báo cáo lấy theo tên file nguồn chuẩn, thêm `_Check.xlsx`. Các sheet có vai trò như sau:
 
-Khớp hoàn toàn và khớp sau chuẩn hóa đều đạt bộ ba. Các cột ngoài bộ ba không ảnh hưởng tỷ lệ. Không có mẫu số thì hiển thị rõ, không trả 100%. Thống kê đếm kết quả nghiệp vụ, không cộng dòng ứng viên. Báo cáo quá giới hạn được chia nhiều file, mỗi file vẫn ba sheet và có thống kê toàn đợt giống nhau.
+- **Tong_hop**: chỉ số tổng quát. Phân biệt số hồ sơ nguồn đã khớp với số dòng file trường khớp; nếu một nguồn khớp với nhiều dòng trường trùng bộ ba thì nguồn được tính một lần, còn các dòng trường được đếm riêng.
+- **Khop**: các hồ sơ được xác nhận trùng theo họ tên, ngày sinh, năm tốt nghiệp. Nếu có nhiều dòng file trường cùng khớp với một hồ sơ nguồn duy nhất, ghi chú cho biết số lượng và vị trí từng dòng.
+- **Chi_co_trong_nguon_chuan**: hồ sơ có trong nguồn chuẩn nhưng không có hồ sơ tương ứng trong file trường.
+- **Lech_thong_tin**: nhìn từ phía nguồn chuẩn; mỗi hồ sơ nguồn chưa được kết luận khớp chỉ liệt kê một lần. Cột “Thông tin lệch” nêu những khác biệt giữa nguồn và các ứng viên trường để hỗ trợ rà soát.
+- **Truong_khong_co_trong_nguon**: hồ sơ file trường không tìm thấy ứng viên tương ứng trong nguồn chuẩn.
+- **Can_xac_minh**: nhìn từ phía file trường; hồ sơ trường có ứng viên nhưng chưa thể xác nhận ghép với hồ sơ nguồn cụ thể, hoặc thiếu/sai thông tin định danh. Không tự kết luận các hồ sơ này là khớp hay thừa.
+
+`Lech_thong_tin` và `Can_xac_minh` là hai góc nhìn của quy trình (nguồn chuẩn và file trường); chúng có thể phản ánh cùng một nhóm chưa phân định được, không nhất thiết là hai loại lỗi riêng biệt. “Lệch thông tin” là dấu hiệu để đối chiếu, không tự nó chứng minh dữ liệu trường sai. Vị trí trong báo cáo chỉ ghi tên tệp, sheet và dòng, không ghi đường dẫn thư mục. Khi một sheet vượt giới hạn Excel, báo cáo được chia phần với hậu tố số.
+
+Khớp hoàn toàn và khớp sau chuẩn hóa đều đạt bộ ba. Các cột ngoài bộ ba không ảnh hưởng tỷ lệ. Không có mẫu số thì hiển thị rõ, không trả 100%. Báo cáo quá giới hạn được chia nhiều file, mỗi file có đủ các sheet và thống kê toàn đợt giống nhau.
 
 Mỗi đợt có thư mục riêng và `TRANG_THAI.txt`. Chỉ dùng kết quả khi trạng thái hoàn tất (pha 1 có thể ghi chưa đầy đủ). Ghi `.partial.xlsx` rồi đổi tên khi thành công. Hủy có hiệu lực giữa các dòng/công đoạn; thao tác Openpyxl đang nén một file cần hoàn thành trước khi nhận hủy. Không ghi đè đầu vào. Log và cấu hình giao diện ở `%USERPROFILE%\THCS_Offline`; log chứa đường dẫn và thông tin xử lý, không gửi ra mạng.
 

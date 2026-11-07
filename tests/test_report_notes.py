@@ -15,14 +15,16 @@ class ReportNoteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             writer=ReportWriter(tmp,'1987',1,1)
             writer.add(MatchResult(REVIEW,school=school,candidates=[source],reason='Chưa xác định được cặp; không tính khớp.'))
+            writer.add(MatchResult(REVIEW,source=source,candidates=[school],reason='Chưa ghép chính xác; có 1 hồ sơ trường cần xác minh.'))
             path=writer.finish()[0]
             wb=load_workbook(path)
             try:
-                for sheet in ('Lech_thong_tin','Thua_Thieu'):
-                    note=wb[sheet]['K2'].value
-                    self.assertIn('Khớp họ tên, năm tốt nghiệp',note)
-                    self.assertIn('Lệch ngày sinh',note)
-                    self.assertIn('10/03/1973',note)
-                    self.assertIn('10/03/1976',note)
-                    self.assertEqual(wb[sheet]['A2'].value,REVIEW)
+                self.assertEqual(wb['Can_xac_minh']['Y2'].value,'1')
+                candidate=wb['Can_xac_minh']['Z2'].value
+                self.assertIn('Cao Hồng Đức',candidate)
+                self.assertIn('10/03/1973',candidate)
+                self.assertEqual(wb['Can_xac_minh']['AA2'].value,'Chưa xác định được cặp; không tính khớp.')
+                difference=wb['Lech_thong_tin']['Z2'].value
+                self.assertIn('lệch ngày sinh',difference)
+                self.assertNotIn('lệch họ tên',difference)
             finally: wb.close()

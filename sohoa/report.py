@@ -1,135 +1,240 @@
-"""Streaming report renderer: bounded memory, three sheets per report part."""
+"""Streaming, source-centric Excel reconciliation report."""
 from collections import Counter
 from pathlib import Path
 import pickle
 import tempfile
-import pandas as pd
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
-from openpyxl.styles import PatternFill, Font
-from .domain import IDENTITY, MATCH, NORMALIZED, REVIEW, text, birth
+from openpyxl.styles import PatternFill
+from openpyxl.utils import get_column_letter
+from .domain import AppError, HEADERS, IDENTITY, MATCH, NORMALIZED, REVIEW, ONLY_SOURCE, ONLY_SCHOOL, text
 from .excel import append_text, save_atomic, MAX_ROWS
 
-LABELS = ['Họ tên', 'Ngày sinh', 'Năm tốt nghiệp']
-DETAIL_HEADERS = ['Trạng thái', 'Loại dòng', 'Họ tên chuẩn', 'Họ tên trường',
- 'Ngày sinh chuẩn', 'Ngày sinh trường', 'Năm TN chuẩn', 'Năm TN trường',
- 'Nguồn chuẩn', 'Nguồn trường', 'Lý do']
+MATCHED = (MATCH, NORMALIZED)
+IDENTITY_LABELS = ('họ tên', 'ngày sinh', 'năm tốt nghiệp')
 
-def detail(ws, result, source=None, candidate=False):
-    source = source or result.source
-    school = result.school
-    values = [result.status, 'Ứng viên, chưa xác nhận' if candidate else 'Kết quả']
-    marked = set()
-    for k in IDENTITY:
-        a = source.values[k] if source else ''
-        b = school.values[k] if school else ''
-        pos = len(values)
-        values.extend([a,b])
-        if text(a) != text(b):
-            marked.update((pos,pos+1))
-    reason = result.reason
-    if source and school:
-        notes=[]; matched=[]
-        for index, (k, label) in enumerate(zip(IDENTITY, LABELS)):
-            a,b = source.values[k].strip(), school.values[k].strip()
-            if not a and b:
-                notes.append(f'{label}: nguồn chuẩn trống; trường gửi «{b}» — đề nghị bổ sung, phải xác minh đúng học sinh trước.')
-            elif a and not b:
-                notes.append(f'{label}: trường thiếu thông tin; nguồn chuẩn «{a}».')
-            elif not a and not b:
-                notes.append(f'{label}: cả hai bên đều trống, chưa đủ căn cứ đối chiếu.')
-            elif k == 6 and (not birth(a)[1] or not birth(b)[1]):
-                notes.append(f'Ngày sinh chưa khớp đầy đủ/không hợp lệ: chuẩn «{a}»; trường gửi «{b}».')
-            elif source.keys[index] != school.keys[index]:
-                notes.append(f'Lệch {label.lower()}: chuẩn «{a}»; trường gửi «{b}».')
+
+def _candidate_summary(records):
+    entries = []
+    for record in records[:3]:
+        name, dob, year = (record.values[i] for i in IDENTITY)
+        entries.append(f'{name} | {dob} | {year} | {record.location}')
+    if len(records) > 3:
+        entries.append(f'… và {len(records) - 3} hồ sơ khác')
+    return '; '.join(entries)
+
+
+def _difference_summary(source, candidates):
+    if any(source.keys == candidate.keys for candidate in candidates):
+        return 'Có ứng viên trùng bộ ba; cần xác minh'
+    differences = []
+    for candidate in candidates:
+        for index, (field_index, label) in enumerate(zip(IDENTITY, IDENTITY_LABELS)):
+            source_value = text(source.values[field_index]).strip()
+            candidate_value = text(candidate.values[field_index]).strip()
+            if not source_value and candidate_value:
+                difference = f'thiếu {label} ở nguồn chuẩn'
+            elif source_value and not candidate_value:
+                difference = f'thiếu {label} ở file trường'
+            elif source.keys[index] != candidate.keys[index]:
+                difference = f'lệch {label}'
             else:
-                matched.append(label.lower())
-        if matched:
-            notes.insert(0,'Khớp '+', '.join(matched)+' (sau chuẩn hóa).')
-        reason=' '.join(notes + ([reason] if reason else []))
-    values += [source.location if source else '', school.location if school else '', reason]
-    cells = []
-    for i,v in enumerate(values):
-        c = WriteOnlyCell(ws, text(v)); c.data_type = 's'
-        if i in marked:
-            c.fill = PatternFill('solid', fgColor='FFD966')
-        cells.append(c)
-    ws.append(cells)
+                continue
+            if difference not in differences:
+                differences.append(difference)
+    return '; '.join(differences) or 'Không khớp duy nhất; cần xác minh'
+
 
 class ReportWriter:
-    def __init__(self, folder, scope, source_count, school_count, row_limit=MAX_ROWS):
+    def __init__(self, folder, scope, source_count, school_count, row_limit=MAX_ROWS,
+                 output_name='Bao_cao_Check'):
         self.folder = Path(folder)
         self.scope = scope
         self.source_count, self.school_count = source_count, school_count
-        self.counts = Counter()
-        self.part = 0
         self.limit = row_limit
+        self.output_name = str(output_name)
+        self.stats = Counter()
+        self.part = 0
         self.paths = []
         self.spool = tempfile.TemporaryFile()
+
+    def add(self, result):
+        if result.status in MATCHED:
+            self.stats['matched'] += 1
+            self.stats['matched_school'] += len(result.matching_schools) or 1
+            self.stats[result.status] += 1
+        elif result.source:
+            self.stats['source_unmatched'] += 1
+            self.stats['source_review' if result.status == REVIEW else 'source_only'] += 1
+        elif result.school:
+            self.stats['school_review' if result.status == REVIEW else 'school_only'] += 1
+        pickle.dump(result, self.spool, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def _summary_rows(self):
+        matched = self.stats['matched']
+        matched_school = self.stats['matched_school']
+        return [
+            ('Phạm vi năm', self.scope, ''),
+            ('Tổng hồ sơ nguồn chuẩn', self.source_count, '100%'),
+            ('Tổng hồ sơ trường gửi', self.school_count, '100%'),
+            ('Khớp hoàn toàn', self.stats[MATCH], ''),
+            ('Khớp sau chuẩn hóa', self.stats[NORMALIZED], ''),
+            ('Tổng hồ sơ nguồn khớp', matched, ''),
+            ('Tỷ lệ hồ sơ file trường khớp / hồ sơ trường gửi', matched_school,
+             f'{matched_school / self.school_count:.2%}' if self.school_count else 'Không có mẫu số'),
+            ('Độ bao phủ / hồ sơ nguồn chuẩn', matched,
+             f'{matched / self.source_count:.2%}' if self.source_count else 'Không có mẫu số'),
+            ('Nguồn chưa khớp', self.source_count - matched, ''),
+            ('  Chỉ có trong nguồn chuẩn (sheet riêng)', self.stats['source_only'], ''),
+            ('  Nguồn cần xác minh', self.stats['source_review'], ''),
+            ('Trường chỉ có (không tìm thấy ứng viên nguồn)', self.stats['school_only'], ''),
+            ('Trường cần xác minh (không kết luận là thừa)', self.stats['school_review'], ''),
+        ]
 
     def _open(self):
         self.part += 1
         self.wb = Workbook(write_only=True)
         self.summary = self.wb.create_sheet('Tong_hop')
+        self.matched = self.wb.create_sheet('Khop')
+        self.source_only = self.wb.create_sheet('Chi_co_trong_nguon_chuan')
         self.diff = self.wb.create_sheet('Lech_thong_tin')
-        self.extra = self.wb.create_sheet('Thua_Thieu')
-        self.rows = 20
-        for ws in (self.summary, self.diff, self.extra):
-            ws.freeze_panes = 'C2'
-            for col in ('A','B','C','D','E','F','G','H','I','J','K'):
-                ws.column_dimensions[col].width = 28 if col not in ('I','J','K') else 55
-        append_text(self.summary, ['BÁO CÁO ĐỐI SOÁT THCS', f'Phần {self.part}'])
-        append_text(self.summary, ['Phạm vi năm', self.scope])
-        append_text(self.summary, ['Số dòng nguồn chuẩn', self.source_count])
-        append_text(self.summary, ['Số dòng trường gửi', self.school_count])
-        # Pandas is restricted to small aggregate tables, never the full historical corpus.
-        frame = pd.DataFrame(sorted(self.counts.items()), columns=['Trạng thái','Số lượng'])
-        for status,count in frame.itertuples(index=False,name=None):
-            append_text(self.summary, [status,count])
-        matched = self.counts[MATCH] + self.counts[NORMALIZED]
-        append_text(self.summary, ['Tỷ lệ khớp / dòng trường', f'{matched/self.school_count:.2%}' if self.school_count else 'Không có mẫu số'])
-        append_text(self.summary, ['Độ bao phủ / dòng chuẩn', f'{matched/self.source_count:.2%}' if self.source_count else 'Không có mẫu số'])
-        append_text(self.summary, ['Lưu ý', 'Chỉ kiểm tra họ tên, ngày sinh, năm tốt nghiệp. Khớp gồm khớp sau chuẩn hóa. Dòng ứng viên không phải số học sinh bổ sung.'])
-        append_text(self.summary, [])
-        append_text(self.summary, DETAIL_HEADERS)
-        append_text(self.diff, DETAIL_HEADERS)
-        append_text(self.extra, DETAIL_HEADERS)
+        self.extra = self.wb.create_sheet('Truong_khong_co_trong_nguon')
+        self.review = self.wb.create_sheet('Can_xac_minh')
+        self.sheet_rows = {ws.title: 1 for ws in (
+            self.matched, self.source_only, self.diff, self.extra, self.review
+        )}
+        self.summary.freeze_panes = 'A2'
+        self.summary.column_dimensions['A'].width = 55
+        self.summary.column_dimensions['B'].width = 28
+        self.summary.column_dimensions['C'].width = 24
+        append_text(self.summary, ['Chỉ tiêu', 'Số lượng / giá trị', 'Tỷ lệ'], row_number=1)
+        for row in self._summary_rows():
+            cells = []
+            for value in row:
+                cell = WriteOnlyCell(self.summary, value=value)
+                if isinstance(value, str):
+                    cell.data_type = 's'
+                cells.append(cell)
+            self.summary.append(cells)
 
-    def add(self, result):
-        self.counts[result.status] += 1
-        pickle.dump(result, self.spool, protocol=pickle.HIGHEST_PROTOCOL)
+        matched_headers = (['Trạng thái'] +
+                           [f'Nguồn chuẩn — {header}' for header in HEADERS] +
+                           [f'File trường — {header}' for header in HEADERS] +
+                           ['Vị trí nguồn chuẩn', 'Vị trí file trường', 'Ghi chú đối soát'])
+        diff_headers = list(HEADERS) + [
+            'Trạng thái', 'Thông tin lệch', 'Số ứng viên file trường',
+            'Thông tin ứng viên (tối đa 3)', 'Ghi chú', 'Vị trí nguồn chuẩn'
+        ]
+        source_only_headers = list(HEADERS) + ['Vị trí nguồn chuẩn']
+        extra_headers = list(HEADERS) + ['Vị trí file trường']
+        review_headers = list(HEADERS) + [
+            'Số ứng viên nguồn', 'Vị trí ứng viên nguồn (tối đa 3)', 'Ghi chú',
+            'Vị trí file trường gửi'
+        ]
+        for ws, headers in ((self.matched, matched_headers), (self.source_only, source_only_headers),
+                            (self.diff, diff_headers), (self.extra, extra_headers),
+                            (self.review, review_headers)):
+            ws.freeze_panes = 'A2'
+            for index in range(1, len(headers) + 1):
+                ws.column_dimensions[get_column_letter(index)].width = 28
+            if ws is self.extra:
+                append_text(ws, ['Dữ liệu trường gửi lên mà không có trong dữ liệu nguồn chuẩn'])
+                append_text(ws, headers, row_number=2)
+                self.sheet_rows[ws.title] = 2
+            elif ws is self.source_only:
+                append_text(ws, ['Dữ liệu chỉ có trong nguồn chuẩn'])
+                append_text(ws, headers, row_number=2)
+                self.sheet_rows[ws.title] = 2
+            else:
+                append_text(ws, headers, row_number=1)
+
+    def _capacity(self, ws):
+        if self.sheet_rows[ws.title] >= self.limit - 1:
+            self._save()
+            self._open()
+            return getattr(self, {
+                'Khop': 'matched',
+                'Chi_co_trong_nguon_chuan': 'source_only',
+                'Lech_thong_tin': 'diff',
+                'Truong_khong_co_trong_nguon': 'extra',
+                'Can_xac_minh': 'review',
+            }[ws.title])
+        return ws
+
+    def _append_match(self, result):
+        school_values = result.school.values if result.school else ('',) * len(HEADERS)
+        values = [result.status, *result.source.values, *school_values,
+                  result.source.location, result.school.location if result.school else '',
+                  result.reason]
+        cells = []
+        for index, value in enumerate(values):
+            cell = WriteOnlyCell(self.matched, value=text(value))
+            cell.data_type = 's'
+            source_index = index - 1 if 1 <= index <= len(HEADERS) else None
+            school_index = index - 1 - len(HEADERS) if len(HEADERS) + 1 <= index <= 2 * len(HEADERS) else None
+            if (source_index is not None and source_index in IDENTITY and
+                    result.school is not None and
+                    result.source.values[source_index] != result.school.values[source_index]) or (
+                    school_index is not None and school_index in IDENTITY and
+                    result.school is not None and
+                    result.source.values[school_index] != result.school.values[school_index]):
+                cell.fill = PatternFill('solid', fgColor='FFD966')
+            cells.append(cell)
+        self.matched.append(cells)
 
     def _render(self, result):
-        # Each candidate is a separate evidence row, not an additional student count.
-        evidence = result.candidates or [result.source]
-        for source in evidence:
-            if self.rows >= self.limit - 1:
-                self._save()
-                self._open()
-            detail(self.summary, result, source, bool(result.candidates))
-            if result.status not in (MATCH, NORMALIZED):
-                detail(self.extra, result, source, bool(result.candidates))
-                if result.candidates:
-                    detail(self.diff, result, source, True)
-            elif result.status == NORMALIZED:
-                detail(self.diff, result, source)
-            self.rows += 1
+        if result.status in MATCHED:
+            self.matched = self._capacity(self.matched)
+            self._append_match(result)
+            self.sheet_rows[self.matched.title] += 1
+        elif result.status == ONLY_SOURCE:
+            self.source_only = self._capacity(self.source_only)
+            append_text(self.source_only, (*result.source.values, result.source.location))
+            self.sheet_rows[self.source_only.title] += 1
+        elif result.source:
+            self.diff = self._capacity(self.diff)
+            append_text(self.diff, (*result.source.values, result.status,
+                                    _difference_summary(result.source, result.candidates),
+                                    len(result.candidates),
+                                    _candidate_summary(result.candidates), result.reason,
+                                    result.source.location))
+            self.sheet_rows[self.diff.title] += 1
+        elif result.status == ONLY_SCHOOL:
+            self.extra = self._capacity(self.extra)
+            append_text(self.extra, (*result.school.values, result.school.location))
+            self.sheet_rows[self.extra.title] += 1
+        elif result.school:
+            self.review = self._capacity(self.review)
+            append_text(self.review, (*result.school.values, len(result.candidates),
+                                      _candidate_summary(result.candidates), result.reason,
+                                      result.school.location))
+            self.sheet_rows[self.review.title] += 1
 
     def _save(self):
-        path = self.folder / f'Bao_cao_{self.part:03}.xlsx'
+        path = self.folder / f'{self.output_name}_{self.part:03}.xlsx'
         save_atomic(self.wb, path)
         self.paths.append(path)
 
-    def finish(self, check=lambda:None):
+    def finish(self, check=lambda: None):
         try:
+            if self.stats['matched'] + self.stats['source_unmatched'] != self.source_count:
+                raise AppError('Số hồ sơ nguồn phân loại không khớp tổng số dòng nguồn.')
+            if self.stats['matched_school'] + self.stats['school_only'] + self.stats['school_review'] != self.school_count:
+                raise AppError('Số hồ sơ trường phân loại không khớp tổng số dòng trường gửi.')
             self.spool.seek(0)
             self._open()
             while True:
                 check()
-                try: result = pickle.load(self.spool)
-                except EOFError: break
+                try:
+                    result = pickle.load(self.spool)
+                except EOFError:
+                    break
                 self._render(result)
             self._save()
+            if len(self.paths) == 1:
+                final = self.folder / f'{self.output_name}.xlsx'
+                self.paths[0].replace(final)
+                self.paths[0] = final
             return self.paths
         finally:
             self.spool.close()

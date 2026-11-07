@@ -59,7 +59,7 @@ def scan_schools(data_dir, output, context=None):
             'Duyệt Danh_sach_truong.xlsx: giữ nguyên alias; điền cùng school_id và school_name cho các tên cùng trường.\n'
             'from_year/to_year để trống sẽ áp dụng 1987–2005. Để trống cả school_id và school_name nếu chưa duyệt.\n'
             'goi_y_nhom chỉ để tham khảo; không tự gộp. Không tự bỏ số 1/2 trong tên trường.\n'
-            'Lưu và đóng Excel, chọn file này ở mục Ánh xạ trường rồi chạy Gộp và tách. Không sửa dữ liệu đầu vào.\n',encoding='utf-8')
+            'Lưu và đóng Excel, chọn file này ở mục Ánh xạ trường rồi chạy Gộp và tách theo năm. Không sửa dữ liệu đầu vào.\n',encoding='utf-8')
         if issues: error_report(folder/'bao_cao_loi.xlsx',issues)
         state(folder,f'{"CHƯA ĐẦY ĐỦ" if issues else "HOÀN TẤT"}: {len(counts)} tên gốc, {sum(counts.values())} bản ghi. Chưa tự gộp trường.')
         ctx.log(f'Quét xong: {len(counts)} tên gốc; xem Danh_sach_truong.xlsx trong {folder}')
