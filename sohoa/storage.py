@@ -20,13 +20,22 @@ class RecordStore:
             seq = float(record.values[0])
         except ValueError:
             seq = 1e100
+        payload = list(record.values)
+        if record.unmapped:
+            payload.append({'unmapped': record.unmapped})
         self.db.execute('''INSERT INTO records(side,group_id,year,seq,name,dob,grad,cert,valid,payload,file,sheet,rownum,origin)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (side, group, grad, seq, name, dob, grad, record.certificate,
-          int(record.valid), json.dumps(record.values, ensure_ascii=False), record.file, record.sheet, record.row, record.origin))
+          int(record.valid), json.dumps(payload, ensure_ascii=False), record.file, record.sheet, record.row, record.origin))
 
     @staticmethod
     def unpack(row):
-        return row[0], StudentRecord(tuple(json.loads(row[10])), row[11], row[12], row[13], row[14])
+        payload = json.loads(row[10])
+        unmapped = ()
+        if len(payload) > 24 and isinstance(payload[24], dict):
+            unmapped = tuple(tuple(value) for value in payload[24].get('unmapped', ()))
+        return row[0], StudentRecord(
+            tuple(payload[:24]), row[11], row[12], row[13], row[14], unmapped,
+        )
 
     def query(self, condition='1', args=(), order='id'):
         for row in self.db.execute(f'SELECT * FROM records WHERE {condition} ORDER BY {order}', args):

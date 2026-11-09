@@ -47,32 +47,93 @@ def _difference_summary(source, candidates):
 
 class ReportWriter:
     def __init__(self, folder, scope, source_count, school_count, row_limit=MAX_ROWS,
-                 output_name='Bao_cao_Check'):
+                 output_name='Bao_cao_Check', batch_mode=False):
         self.folder = Path(folder)
         self.scope = scope
         self.source_count, self.school_count = source_count, school_count
         self.limit = row_limit
         self.output_name = str(output_name)
+        self.batch_mode = batch_mode
         self.stats = Counter()
         self.part = 0
         self.paths = []
         self.spool = tempfile.TemporaryFile()
+        self.matched_source_rows = set()
+        self.matched_source_rows_by_year = {}
+        self.import_years = set()
+        self.school_only_spools = {}
 
     def add(self, result):
+        if self.batch_mode:
+            for record in (result.source, result.school):
+                if record is not None:
+                    year = record.keys[2]
+                    if len(year) == 4 and year.isdigit():
+                        self.import_years.add(year)
         if result.status in MATCHED:
             self.stats['matched'] += 1
             self.stats['matched_school'] += len(result.matching_schools) or 1
             self.stats[result.status] += 1
+            if self.batch_mode and result.source:
+                self.matched_source_rows.add(result.source.row)
+                self.matched_source_rows_by_year.setdefault(
+                    result.source.keys[2],set(),
+                ).add(result.source.row)
         elif result.source:
             self.stats['source_unmatched'] += 1
             self.stats['source_review' if result.status == REVIEW else 'source_only'] += 1
         elif result.school:
             self.stats['school_review' if result.status == REVIEW else 'school_only'] += 1
+            if self.batch_mode and result.status == ONLY_SCHOOL:
+                year = result.school.keys[2]
+                spool = self.school_only_spools.setdefault(
+                    year,tempfile.TemporaryFile(),
+                )
+                pickle.dump(result.school, spool,
+                            protocol=pickle.HIGHEST_PROTOCOL)
         pickle.dump(result, self.spool, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def school_only_records(self, year):
+        spool = self.school_only_spools.get(str(year))
+        if spool is None:
+            return
+        spool.seek(0)
+        while True:
+            try:
+                yield pickle.load(spool)
+            except EOFError:
+                break
+
+    def close(self):
+        if not self.spool.closed:
+            self.spool.close()
+        for spool in self.school_only_spools.values():
+            if not spool.closed:
+                spool.close()
 
     def _summary_rows(self):
         matched = self.stats['matched']
         matched_school = self.stats['matched_school']
+        if self.batch_mode:
+            unmatched = self.source_count - matched + self.school_count - matched_school
+            return [
+                ('Năm', self.scope, ''),
+                ('TỔNG bản ghi dữ liệu Sở GD', self.source_count, '100%'),
+                ('Tổng bản ghi các trường gửi', self.school_count, '100%'),
+                ('Khớp hoàn toàn', self.stats[MATCH], ''),
+                ('Khớp sau chuẩn hóa', self.stats[NORMALIZED], ''),
+                ('Tổng hồ sơ khớp', matched, ''),
+                ('Tỷ lệ hồ sơ file trường khớp / hồ sơ trường gửi', matched_school,
+                 f'{matched_school / self.school_count:.2%}' if self.school_count else 'Không có mẫu số'),
+                ('Độ bao phủ / hồ sơ nguồn chuẩn', matched,
+                 f'{matched / self.source_count:.2%}' if self.source_count else 'Không có mẫu số'),
+                ('Dữ liệu chưa khớp (tổng số hồ sơ chưa khớp ở cả hai bên)', unmatched,
+                 'Mỗi hồ sơ nguồn và hồ sơ trường gửi được tính riêng.'),
+                ('Bản ghi chỉ có trong Dữ liệu Sở GD', self.stats['source_only'], ''),
+                ('Dữ liệu chỉ có trong trường gửi', self.stats['school_only'], ''),
+                ('Dữ liệu cần kiểm tra (Sở GD trừ tổng hồ sơ khớp)',
+                 self.source_count - matched, ''),
+            ]
         return [
             ('Phạm vi năm', self.scope, ''),
             ('Tổng hồ sơ nguồn chuẩn', self.source_count, '100%'),
@@ -94,15 +155,37 @@ class ReportWriter:
     def _open(self):
         self.part += 1
         self.wb = Workbook(write_only=True)
-        self.summary = self.wb.create_sheet('Tong_hop')
-        self.matched = self.wb.create_sheet('Khop')
-        self.source_only = self.wb.create_sheet('Chi_co_trong_nguon_chuan')
-        self.diff = self.wb.create_sheet('Lech_thong_tin')
-        self.extra = self.wb.create_sheet('Truong_khong_co_trong_nguon')
-        self.review = self.wb.create_sheet('Can_xac_minh')
-        self.sheet_rows = {ws.title: 1 for ws in (
-            self.matched, self.source_only, self.diff, self.extra, self.review
-        )}
+        names = (
+            ('TONGHOP', 'DULIEU_OK', 'DULIEU_CHI_CO_TRONG_SGD',
+             'DULIEU_KHONGCO_TRONG_SGD', 'DULIEU_LECH_THONG_TIN',
+             'DULIEU_CAN_XAC_MINH')
+            if self.batch_mode else
+            ('Tong_hop', 'Khop', 'Chi_co_trong_nguon_chuan',
+             'Lech_thong_tin', 'Truong_khong_co_trong_nguon',
+             'Can_xac_minh')
+        )
+        self.summary = self.wb.create_sheet(names[0])
+        self.matched = self.wb.create_sheet(names[1])
+        self.source_only = self.wb.create_sheet(names[2])
+        if self.batch_mode:
+            self.extra = self.wb.create_sheet(names[3])
+            self.diff = self.wb.create_sheet(names[4])
+        else:
+            self.diff = self.wb.create_sheet(names[3])
+            self.extra = self.wb.create_sheet(names[4])
+        self.review = self.wb.create_sheet(names[5])
+        self.sheet_attributes = {
+            self.matched.title: 'matched',
+            self.source_only.title: 'source_only',
+            self.diff.title: 'diff',
+            self.extra.title: 'extra',
+            self.review.title: 'review',
+        }
+        description_rows = {self.diff.title, self.review.title} if self.batch_mode else set()
+        self.sheet_rows = {
+            ws.title: 2 if ws.title in description_rows else 1
+            for ws in (self.matched, self.source_only, self.diff, self.extra, self.review)
+        }
         self.summary.freeze_panes = 'A2'
         self.summary.column_dimensions['A'].width = 55
         self.summary.column_dimensions['B'].width = 28
@@ -145,6 +228,20 @@ class ReportWriter:
                 append_text(ws, ['Dữ liệu chỉ có trong nguồn chuẩn'])
                 append_text(ws, headers, row_number=2)
                 self.sheet_rows[ws.title] = 2
+            elif ws is self.diff and self.batch_mode:
+                append_text(ws, [
+                    'Góc nhìn dữ liệu nguồn Sở GD: hồ sơ nguồn chưa được xác nhận khớp; '
+                    'thông tin lệch và ứng viên được ghi để rà soát. Không tự kết luận '
+                    'dữ liệu trường gửi sai.'
+                ])
+                append_text(ws, headers, row_number=2)
+            elif ws is self.review and self.batch_mode:
+                append_text(ws, [
+                    'Góc nhìn dữ liệu trường gửi: chưa thể xác nhận hồ sơ ghép với nguồn '
+                    'Sở GD cụ thể hoặc dữ liệu định danh thiếu/sai. Có thể liên quan cùng '
+                    'trường hợp ở DULIEU_LECH_THONG_TIN; đây không phải kết luận hồ sơ thừa.'
+                ])
+                append_text(ws, headers, row_number=2)
             else:
                 append_text(ws, headers, row_number=1)
 
@@ -152,13 +249,7 @@ class ReportWriter:
         if self.sheet_rows[ws.title] >= self.limit - 1:
             self._save()
             self._open()
-            return getattr(self, {
-                'Khop': 'matched',
-                'Chi_co_trong_nguon_chuan': 'source_only',
-                'Lech_thong_tin': 'diff',
-                'Truong_khong_co_trong_nguon': 'extra',
-                'Can_xac_minh': 'review',
-            }[ws.title])
+            return getattr(self, self.sheet_attributes[ws.title])
         return ws
 
     def _append_match(self, result):

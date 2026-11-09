@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from openpyxl import Workbook
-from .domain import HEADERS, IDENTITY, AppError, Cancelled, StructureError, Progress, StudentRecord, normalize
-from .excel import records, append_text, save_atomic, error_report, MAX_ROWS, merge_records, add_school_statistics, setup_data_layout, canonical_header_row
+from .domain import HEADERS, IDENTITY, UNMAPPED_HEADER, AppError, Cancelled, StructureError, Progress, StudentRecord, normalize
+from .excel import records, append_text, save_atomic, error_report, MAX_ROWS, merge_records, add_school_statistics, setup_data_layout, canonical_header_row, export_import_workbook
 from .storage import RecordStore
 from .matching import reconcile
 from .report import ReportWriter
@@ -25,6 +25,10 @@ class JobContext:
     def log(self, message, current=0, total=0):
         self.check()
         self.emit(Progress(message, current, total))
+
+    def progress(self, message, current, total):
+        self.check()
+        self.emit(Progress(message, current, total, log_message=False))
 
 def run_folder(output, kind):
     root = Path(output)
@@ -132,11 +136,20 @@ def merge(data_dir, output, alias_file=None, context=None):
     try:
         files = input_excels(data_dir)
         for index,path in enumerate(files,1):
-            ctx.log(f'Đọc {path.name}',index,len(files))
+            ctx.log(f'Đang đọc tệp: {path.name}')
             store.db.execute('SAVEPOINT input_file')
             file_count=0
+            def report_file_progress(current,total):
+                file_fraction=current/total if total else 1
+                read_fraction=((index-1)+file_fraction)/len(files)
+                ctx.progress(
+                    f'Đang đọc tệp ({index}/{len(files)}): {path.name}',
+                    round(read_fraction*50000),100000,
+                )
             try:
-                for record in merge_records(path,log=ctx.log):
+                for record in merge_records(
+                        path, log=ctx.log,
+                        progress=report_file_progress):
                     ctx.check()
                     year=record.keys[2]
                     group=year if re.fullmatch(r'\d{4}',year) else '__UNKNOWN__'
@@ -159,8 +172,16 @@ def merge(data_dir, output, alias_file=None, context=None):
         lineage.create_function('school_sort', 1, lambda payload: normalize(json.loads(payload)[11]))
         lineage.execute('CREATE TABLE exports(output_file TEXT, output_row INTEGER, record_id INTEGER)')
         groups=[sid for (sid,) in store.db.execute('SELECT DISTINCT group_id FROM records ORDER BY group_id')]
+        ctx.log('Bắt đầu giai đoạn xuất dữ liệu theo năm.')
+        ctx.progress('Đang xuất dữ liệu theo năm',50000,100000)
+        exported=0
         for sid in groups:
-            ctx.log(f'Xuất năm tốt nghiệp: {sid}')
+            ctx.log(f'Đang xuất năm tốt nghiệp: {sid}')
+            export_fraction=exported/total_rows if total_rows else 1
+            ctx.progress(
+                f'Đang chuẩn bị xuất năm {sid}',
+                50000+round(export_fraction*50000),100000,
+            )
             base=sid if sid!='__UNKNOWN__' else 'Chua_xac_dinh_nam'
             wb=None; count=0; part=0
             group_count=store.db.execute('SELECT COUNT(*) FROM records WHERE group_id=?',(sid,)).fetchone()[0]
@@ -170,9 +191,20 @@ def merge(data_dir, output, alias_file=None, context=None):
                     schools={}
                     part+=1; wb=Workbook(write_only=True); ws=wb.create_sheet('Data')
                     setup_data_layout(ws)
-                    append_text(ws,(*HEADERS, 'Nguồn dữ liệu'),row_number=1)
+                    append_text(ws,(*HEADERS, 'Nguồn dữ liệu', UNMAPPED_HEADER),row_number=1)
                     filename=f'{base}.xlsx' if group_count<=MAX_ROWS-1 else f'{base}_{part:03}.xlsx'
-                append_text(ws,(*record.values, f'Tệp: {Path(record.file).name} | Sheet: {record.sheet} | Dòng: {record.row}'),row_number=count+2); count+=1
+                unmapped = '\n'.join(f'{header}: {value}' for header, value in record.unmapped)
+                append_text(ws,(
+                    *record.values,
+                    f'Tệp: {Path(record.file).name} | Sheet: {record.sheet} | Dòng: {record.row}',
+                    unmapped,
+                ),row_number=count+2); count+=1
+                exported+=1
+                if exported % 1000 == 0 or exported == total_rows:
+                    ctx.progress(
+                        f'Đang xuất dữ liệu theo năm: {sid}',
+                        50000+round(exported/total_rows*50000),100000,
+                    )
                 school_key=normalize(record.values[11])
                 school_name,school_count=schools.get(school_key,(' '.join(record.values[11].split()),0))
                 schools[school_key]=(school_name,school_count+1)
@@ -184,6 +216,12 @@ def merge(data_dir, output, alias_file=None, context=None):
             if wb is not None:
                 add_school_statistics(wb,schools)
                 save_atomic(wb,folder/filename)
+            ctx.progress(
+                f'Đang xuất dữ liệu theo năm: {sid}',
+                50000+round(exported/total_rows*50000) if total_rows else 100000,
+                100000,
+            )
+        ctx.progress('Đã hoàn tất các giai đoạn xử lý',100000,100000)
         if unknown: issues.append(f'{unknown} dòng thiếu hoặc sai năm tốt nghiệp; xem Chua_xac_dinh_nam.xlsx.')
         if issues: error_report(folder/'bao_cao_loi.xlsx',issues)
         state(folder, f'{"CHƯA ĐẦY ĐỦ" if issues else "HOÀN TẤT"}: {total_rows} dòng; {unknown} dòng chưa xác định năm.')
@@ -207,9 +245,11 @@ def _lineage(path):
     finally: db.close()
 
 def _compare_pair(source_file, school_file, folder, school_header, mapping, years,
-                  ctx, database_name, output_name, error_name):
+                  ctx, database_name, output_name, error_name, batch_mode=False,
+                  import_dir=None, import_years=None):
     store=RecordStore(folder/database_name)
     counts={'source':0,'school':0}; excluded={'source':0,'school':0}
+    writer=None
     try:
         for side,path,header_row,colmap in (
                 ('source',source_file,1,None),('school',school_file,school_header,mapping)):
@@ -221,20 +261,49 @@ def _compare_pair(source_file, school_file, folder, school_header, mapping, year
                 if years is not None and rec.keys[2].isdigit() and int(rec.keys[2]) not in years:
                     excluded[side]+=1; continue
                 if rec.row in lineage:
-                    rec=StudentRecord(rec.values,rec.file,rec.sheet,rec.row,lineage[rec.row])
+                    rec=StudentRecord(rec.values,rec.file,rec.sheet,rec.row,lineage[rec.row],rec.unmapped)
                 store.add(rec,side); counts[side]+=1
             store.db.commit()
         scope=', '.join(map(str,sorted(years))) if years is not None else 'Tất cả năm trong file'
-        writer=ReportWriter(folder,scope,counts['source'],counts['school'],output_name=output_name)
+        writer=ReportWriter(
+            folder,scope,counts['source'],counts['school'],
+            output_name=output_name,batch_mode=batch_mode,
+        )
         for index,result in enumerate(reconcile(store,ctx.check),1):
             writer.add(result)
             if index%500==0: ctx.log(f'Đã phân loại {index} kết quả')
         ctx.check(); writer.finish(ctx.check)
+        if import_dir is not None:
+            import_dir=Path(import_dir)
+            recheck_dir=import_dir/'kiemtralai'
+            import_dir.mkdir(parents=True,exist_ok=True)
+            recheck_dir.mkdir(parents=True,exist_ok=True)
+            years_to_export = (
+                {str(year) for year in import_years}
+                if import_years is not None else writer.import_years
+            )
+            for year in sorted(years_to_export):
+                ctx.log(f'Đang tạo file import khớp năm {year}.')
+                export_import_workbook(
+                    source_file,import_dir/f'import_{year}.xlsx',
+                    keep_rows=writer.matched_source_rows_by_year.get(year,set()),
+                    check=ctx.check,
+                )
+                ctx.log(f'Đang tạo file import cần kiểm tra năm {year}.')
+                export_import_workbook(
+                    source_file,
+                    recheck_dir/f'import_khong_co_trong_SGD{year}.xlsx',
+                    records_to_append=writer.school_only_records(year),
+                    check=ctx.check,
+                )
         return {'counts':counts,'excluded':excluded,'years':scope}
     except StructureError as exc:
         error_report(folder/error_name,exc.issues)
         raise AppError(f'{exc}\n{folder/error_name}') from exc
-    finally: store.close()
+    finally:
+        if writer is not None:
+            writer.close()
+        store.close()
 
 def compare(source_files, school_file, output, school_header=1, mapping=None, years=None, context=None):
     ctx=context or JobContext()
@@ -246,7 +315,8 @@ def compare(source_files, school_file, output, school_header=1, mapping=None, ye
         if len(source_files)!=1: raise AppError('Hãy chọn đúng một file nguồn chuẩn.')
         result=_compare_pair(source_files[0],school_file,folder,school_header,mapping,years,ctx,
                              'doi_soat.sqlite',f'{Path(source_files[0]).stem}_Check',
-                             'bao_cao_loi.xlsx')
+                             'bao_cao_loi.xlsx',batch_mode=True,
+                             import_dir=folder/'import')
         (folder/'pham_vi.json').write_text(json.dumps({
             'years':result['years'],'counts':result['counts'],'excluded':result['excluded'],
             'columns':[HEADERS[i] for i in IDENTITY]
@@ -292,7 +362,9 @@ def compare_batch(source_dir, school_dir, output, school_header=1, mapping=None,
             futures={
                 executor.submit(
                     _compare_pair,source,school,folder,school_header,mapping,{int(year)},ctx,
-                    f'doi_soat_{year}.sqlite',f'{year}_Check',f'bao_cao_loi_{year}.xlsx'
+                    f'doi_soat_{year}.sqlite',f'{year}_Check',f'bao_cao_loi_{year}.xlsx',
+                    batch_mode=True,import_dir=folder/'import',
+                    import_years={int(year)},
                 ):year
                 for year,source,school in pairs
             }

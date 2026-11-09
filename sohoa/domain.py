@@ -11,6 +11,7 @@ HEADERS = ('STT', 'Số hiệu bằng', 'Số vào sổ gốc cấp văn bằng'
  'Ngày tháng năm cấp bằng', 'Tên cơ quan cấp bằng', 'Chức danh người ký bằng',
  'Họ, chữ đệm, tên người ký bằng', 'Tình trạng văn bằng', 'Xếp loại TN',
  'Ghi chú', 'Mã đơn vị (Mã moet)', 'Tên đơn vị')
+UNMAPPED_HEADER = 'Dữ liệu cột nguồn chưa ánh xạ'
 IDENTITY = (4, 6, 12)
 MATCH = 'Khớp hoàn toàn'
 NORMALIZED = 'Khớp sau chuẩn hóa'
@@ -69,6 +70,7 @@ class StudentRecord:
     sheet: str
     row: int
     origin: str = ''
+    unmapped: tuple = ()
 
     @property
     def keys(self):
@@ -102,3 +104,4 @@ class Progress:
     message: str
     current: int = 0
     total: int = 0
+    log_message: bool = True

@@ -20,8 +20,14 @@ def run(folder):
         wb.save(folder/name); wb.close()
     output=compare([folder/'source.xlsx'],folder/'school.xlsx',folder/'output',years={1995})
     wb=load_workbook(output/'source_Check.xlsx')
-    assert wb.sheetnames==['Tong_hop','Khop','Chi_co_trong_nguon_chuan',
-                           'Lech_thong_tin','Truong_khong_co_trong_nguon','Can_xac_minh']
-    assert wb['Khop']['A2'].value=='Khớp hoàn toàn'
+    assert wb.sheetnames==[
+        'TONGHOP','DULIEU_OK','DULIEU_CHI_CO_TRONG_SGD',
+        'DULIEU_KHONGCO_TRONG_SGD','DULIEU_LECH_THONG_TIN',
+        'DULIEU_CAN_XAC_MINH',
+    ]
+    assert wb['DULIEU_OK']['A2'].value=='Khớp hoàn toàn'
     wb.close()
+    imported=load_workbook(output/'import'/'import_1995.xlsx',read_only=True)
+    assert imported['Data'].max_row==2
+    imported.close()
     (folder/'result.json').write_text(json.dumps({'tkinter':'ok','excel_sqlite_report':'ok'},indent=2),encoding='utf-8')

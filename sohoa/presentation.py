@@ -11,12 +11,13 @@ from .application import merge, compare, compare_batch, JobContext
 from .domain import HEADERS, Progress, AppError, Cancelled
 from .excel import inspect, auto_mapping
 from .paths import resolve_alias, resolve_data
-from .school_scan import scan_schools
 
 class App(ttk.Frame):
     def __init__(self, root, config_dir=None):
         super().__init__(root,padding=12); self.pack(fill='both',expand=True)
-        self.root=root; self.events=queue.Queue(); self.stop=threading.Event(); self.busy=False
+        self.root=root; self.events=queue.Queue(); self.progress_events=queue.Queue(maxsize=1)
+        self.results=queue.Queue()
+        self.stop=threading.Event(); self.busy=False
         self.sources=[]; self.mapvars={}; self.column_labels=[]
         self.config_dir=Path(config_dir) if config_dir else Path.home()/'THCS_Offline'
         self.config_dir.mkdir(exist_ok=True)
@@ -35,8 +36,6 @@ class App(ttk.Frame):
         self.path_row(a,0,'Thư mục dữ liệu',self.data,lambda: self.choose_dir(self.data))
         ttk.Label(a,text='Gộp các file Excel, tách theo năm tốt nghiệp cột M: 1984.xlsx, 1985.xlsx…').grid(row=2,column=0,columnspan=3,sticky='w')
         self.merge_btn=ttk.Button(a,text='Gộp và tách theo năm',command=self.start_merge); self.merge_btn.grid(row=3,column=0,pady=8,sticky='w')
-        self.scan_btn=ttk.Button(a,text='Quét danh sách tên trường để duyệt',command=self.start_scan)
-        self.scan_btn.grid(row=3,column=1,pady=8,sticky='w')
         self.source_label=ttk.Label(b,text='Chưa chọn file nguồn chuẩn',wraplength=650)
         self.source_label.grid(row=0,column=1,columnspan=2,sticky='w')
         ttk.Button(b,text='Chọn file nguồn chuẩn',command=self.choose_sources).grid(row=0,column=0,sticky='w')
@@ -63,7 +62,15 @@ class App(ttk.Frame):
         self.compare_batch_btn=ttk.Button(c,text='Đối soát các năm trùng',command=self.start_compare_batch)
         self.compare_batch_btn.grid(row=3,column=0,pady=8,sticky='w')
         self.path_row(self,1,'Thư mục kết quả',self.output,lambda:self.choose_dir(self.output),pack=True)
-        self.progress=ttk.Progressbar(self,mode='indeterminate'); self.progress.pack(fill='x',pady=8)
+        progress_row=ttk.Frame(self)
+        progress_row.pack(fill='x',pady=8)
+        self.progress=ttk.Progressbar(progress_row,mode='indeterminate')
+        self.progress.pack(side='left',fill='x',expand=True)
+        self.progress_percent=tk.StringVar(value='0.0%')
+        ttk.Label(
+            progress_row,textvariable=self.progress_percent,width=7,anchor='e',
+            font=('Segoe UI',11,'bold'),
+        ).pack(side='left',padx=(8,0))
         self.status=ttk.Label(self,text='Sẵn sàng'); self.status.pack(anchor='w')
         self.console=tk.Text(self,height=16,state='disabled',wrap='word'); self.console.pack(fill='both',expand=True,pady=6)
         self.cancel_btn=ttk.Button(self,text='Hủy tác vụ',command=self.stop.set,state='disabled'); self.cancel_btn.pack(anchor='e')
@@ -108,10 +115,6 @@ class App(ttk.Frame):
                 var.set(labels[index+1] if isinstance(index,int) and -1<=index<len(headers) else labels[0])
             self.column_labels=labels; self.loaded_school=(self.school.get(),self.header.get()); self.loaded_headers=headers
         except Exception as exc: messagebox.showerror('Không đọc được tiêu đề',str(exc))
-
-    def start_scan(self):
-        data,output=self.data.get(),self.output.get()
-        self.start(lambda ctx:scan_schools(data,output,ctx))
 
     def start_merge(self):
         data,output,alias=self.data.get(),self.output.get(),self.alias.get()
@@ -160,40 +163,73 @@ class App(ttk.Frame):
         self.settings.update(output=self.output.get(),data=self.data.get(),alias=self.alias.get())
         self.settings_path.write_text(json.dumps(self.settings,ensure_ascii=False,indent=2),encoding='utf-8')
         self.busy=True; self.stop.clear()
-        self.merge_btn.configure(state='disabled'); self.scan_btn.configure(state='disabled')
+        self.merge_btn.configure(state='disabled')
         self.compare_btn.configure(state='disabled'); self.compare_batch_btn.configure(state='disabled')
         self.cancel_btn.configure(state='normal')
+        self.progress_percent.set('0.0%')
         self.progress.configure(mode='indeterminate'); self.progress.start()
         def worker():
             try:
-                path=fn(JobContext(self.events.put,self.stop.is_set))
-                self.events.put(('done',str(path)))
-            except Cancelled as exc: self.events.put(('cancel',str(exc)))
+                path=fn(JobContext(self.emit_progress,self.stop.is_set))
+                self.results.put(('done',str(path)))
+            except Cancelled as exc: self.results.put(('cancel',str(exc)))
             except Exception as exc:
                 with open(self.config_dir/'errors.log','a',encoding='utf-8') as f: f.write(traceback.format_exc()+'\n')
-                self.events.put(('error',str(exc)))
+                self.results.put(('error',str(exc)))
         threading.Thread(target=worker,daemon=True).start()
 
+    def emit_progress(self, event):
+        if event.log_message:
+            self.events.put(event)
+        try:
+            self.progress_events.put_nowait(event)
+        except queue.Full:
+            try: self.progress_events.get_nowait()
+            except queue.Empty: pass
+            self.progress_events.put_nowait(event)
+
     def poll(self):
+        try: result=self.results.get_nowait()
+        except queue.Empty: result=None
+        if result is not None:
+            while True:
+                try: self.events.get_nowait()
+                except queue.Empty: break
+            while True:
+                try: self.progress_events.get_nowait()
+                except queue.Empty: break
+            self.finish(result)
+            self.root.after(100,self.poll)
+            return
         for _ in range(200):
             try: event=self.events.get_nowait()
             except queue.Empty: break
-            if isinstance(event,Progress):
-                self.log(event.message); self.status.configure(text=event.message)
-                if event.total:
-                    self.progress.stop()
-                    self.progress.configure(mode='determinate',maximum=event.total,value=event.current)
-                elif str(self.progress['mode'])!='indeterminate':
-                    self.progress.configure(mode='indeterminate'); self.progress.start()
-            else:
-                kind,message=event; self.busy=False; self.progress.stop()
-                self.merge_btn.configure(state='normal'); self.scan_btn.configure(state='normal')
-                self.compare_btn.configure(state='normal'); self.compare_batch_btn.configure(state='normal')
-                self.cancel_btn.configure(state='disabled')
-                label={'done':'Đã xuất kết quả','cancel':'Đã hủy','error':'Thất bại'}[kind]
-                self.log(f'{label}: {message}'); self.status.configure(text=label)
-                (messagebox.showerror if kind=='error' else messagebox.showinfo)(label,message)
+            if isinstance(event,Progress) and self.busy and event.log_message:
+                self.log(event.message)
+        try: event=self.progress_events.get_nowait()
+        except queue.Empty: event=None
+        if isinstance(event,Progress) and self.busy:
+            self.status.configure(text=event.message)
+            if event.total:
+                self.progress.stop()
+                self.progress.configure(mode='determinate',maximum=event.total,value=event.current)
+                self.progress_percent.set(f'{event.current/event.total:.1%}')
+        try: result=self.results.get_nowait()
+        except queue.Empty: result=None
+        if result is not None:
+            self.finish(result)
         self.root.after(100,self.poll)
+
+    def finish(self, result):
+        kind,message=result; self.busy=False; self.progress.stop()
+        self.merge_btn.configure(state='normal')
+        self.compare_btn.configure(state='normal'); self.compare_batch_btn.configure(state='normal')
+        self.cancel_btn.configure(state='disabled')
+        if kind=='done':
+            self.progress_percent.set('100.0%')
+        label={'done':'Đã xuất kết quả','cancel':'Đã hủy','error':'Thất bại'}[kind]
+        self.log(f'{label}: {message}'); self.status.configure(text=label)
+        (messagebox.showerror if kind=='error' else messagebox.showinfo)(label,message)
 
     def log(self,message):
         self.console.configure(state='normal'); self.console.insert('end',message+'\n')
